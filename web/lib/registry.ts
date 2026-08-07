@@ -18,10 +18,11 @@ export type RegisteredPool = {
   block: number;
 };
 
-// v3: the frontier is the block the scan actually REACHED (a v2 cache could
-// be stamped "done" with pools missing after one bad RPC day — rescan those)
+// v4: viem drops the `args` topic filter for event LISTS, so the PoolManager
+// Initialize fallback used to take the FIRST pool since deployBlock — a v3
+// cache may hold a WRONG key for a poolId. Rescan clean.
 type Cache = {
-  v: 3;
+  v: 4;
   lastBlock: string;
   pools: Record<string, { key: PoolKey | null; admin: Address; block: number }>;
 };
@@ -46,13 +47,13 @@ function loadCache(chainId: number): Cache {
       const raw = localStorage.getItem(cacheKey(chainId));
       if (raw) {
         const c = JSON.parse(raw) as Cache;
-        if (c.v === 3) return c;
+        if (c.v === 4) return c;
       }
     } catch {
       /* corrupted cache → rescan */
     }
   }
-  return { v: 3, lastBlock: "0", pools: {} };
+  return { v: 4, lastBlock: "0", pools: {} };
 }
 
 function saveCache(chainId: number, c: Cache) {
@@ -112,23 +113,31 @@ async function keyFromPoolManager(net: Net, poolId: Hex): Promise<PoolKey | null
       fromBlock: BigInt(net.deployBlock),
       toBlock: latest,
     });
-    const l = logs[0] as unknown as {
-      args?: {
-        currency0: Address;
-        currency1: Address;
-        fee: number;
-        tickSpacing: number;
-        hooks: Address;
+    // viem ignores the `args` topic filter for event LISTS, so the scan may
+    // return EVERY Initialize since deployBlock — match the id ourselves and
+    // verify the recovered key hashes back to the poolId (can't be poisoned)
+    for (const raw of logs) {
+      const l = raw as unknown as {
+        args?: {
+          id: Hex;
+          currency0: Address;
+          currency1: Address;
+          fee: number;
+          tickSpacing: number;
+          hooks: Address;
+        };
       };
-    };
-    if (!l?.args) return null;
-    return {
-      currency0: l.args.currency0,
-      currency1: l.args.currency1,
-      fee: Number(l.args.fee),
-      tickSpacing: Number(l.args.tickSpacing),
-      hooks: l.args.hooks,
-    };
+      if (!l?.args || l.args.id?.toLowerCase() !== poolId.toLowerCase()) continue;
+      const k: PoolKey = {
+        currency0: l.args.currency0,
+        currency1: l.args.currency1,
+        fee: Number(l.args.fee),
+        tickSpacing: Number(l.args.tickSpacing),
+        hooks: l.args.hooks,
+      };
+      if (poolIdOf(k).toLowerCase() === poolId.toLowerCase()) return k;
+    }
+    return null;
   } catch {
     return null;
   }

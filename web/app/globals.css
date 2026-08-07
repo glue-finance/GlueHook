@@ -351,6 +351,21 @@ body {
 .input::placeholder {
   color: var(--t-dim2);
 }
+/* iOS Safari zooms the whole page when a focused text control renders under
+   16px — on touch-width screens EVERY text input is at least 16px. The bare
+   element rule loses to explicit size utilities (text-[26px] etc.), so the
+   big amount inputs keep their design size. */
+@media (max-width: 1023px) {
+  .input {
+    font-size: 16px;
+  }
+  /* bare element selector: any class-based size (text-[26px], .input) wins */
+  input,
+  select,
+  textarea {
+    font-size: max(16px, 1em);
+  }
+}
 
 .label {
   font-family: var(--font-mono);

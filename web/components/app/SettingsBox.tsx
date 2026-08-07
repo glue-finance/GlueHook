@@ -207,6 +207,9 @@ function AddLiquidity({
   // press, and the label advances once the receipt is verified.
   const amt0 = parseAmt(amounts.a0, dec0);
   const amt1 = parseAmt(amounts.a1, dec1);
+  // Uniswap rule: an amount above the wallet balance disables the button
+  const insufficient0 = amt0 > 0n && bal0.data !== undefined && amt0 > bal0.data;
+  const insufficient1 = amt1 > 0n && bal1.data !== undefined && amt1 > bal1.data;
   const allow0 = useAllowance(net, poolKey.currency0, me, net.hook);
   const allow1 = useAllowance(net, poolKey.currency1, me, net.hook);
   const needApprove0 =
@@ -335,6 +338,8 @@ function AddLiquidity({
         className="btn-launch"
         disabled={
           liq === 0n ||
+          insufficient0 ||
+          insufficient1 ||
           !!cfgErr ||
           allowancesLoading ||
           tx.s === "wallet" ||
@@ -344,17 +349,23 @@ function AddLiquidity({
         onClick={needApprove0 || needApprove1 ? approveNext : submit}
       >
         {phase ??
-          (allowancesLoading
-            ? "checking approvals…"
-            : needApprove0
-              ? `Approve ${meta0.data?.symbol ?? short(poolKey.currency0)}`
-              : needApprove1
-                ? `Approve ${meta1.data?.symbol ?? short(poolKey.currency1)}`
-                : programExists
-                  ? "Add to program"
-                  : advanced
-                    ? "Add liquidity (advanced)"
-                    : "Add liquidity")}
+          (insufficient0 || insufficient1
+            ? `Insufficient ${
+                insufficient0
+                  ? meta0.data?.symbol ?? short(poolKey.currency0)
+                  : meta1.data?.symbol ?? short(poolKey.currency1)
+              } balance`
+            : allowancesLoading
+              ? "checking approvals…"
+              : needApprove0
+                ? `Approve ${meta0.data?.symbol ?? short(poolKey.currency0)}`
+                : needApprove1
+                  ? `Approve ${meta1.data?.symbol ?? short(poolKey.currency1)}`
+                  : programExists
+                    ? "Add to program"
+                    : advanced
+                      ? "Add liquidity (advanced)"
+                      : "Add liquidity")}
       </button>
       {(needApprove0 || needApprove1) && phase === null && (
         <p className="mono -mt-2 text-center text-[10.5px] text-dim2">
@@ -671,6 +682,8 @@ function Donate({
   const needApprove =
     !secIsNative && amtParsed > 0n && allowSec.data !== undefined && allowSec.data < amtParsed;
   const allowanceLoading = !secIsNative && amtParsed > 0n && allowSec.data === undefined;
+  // Uniswap rule: an amount above the wallet balance disables the button
+  const insufficient = amtParsed > 0n && bal.data !== undefined && amtParsed > bal.data;
 
   /** one press = the approval — the next press donates */
   async function approveSec() {
@@ -719,6 +732,7 @@ function Donate({
         className="btn-launch"
         disabled={
           amtParsed <= 0n ||
+          insufficient ||
           allowanceLoading ||
           tx.s === "wallet" ||
           tx.s === "pending" ||
@@ -727,11 +741,13 @@ function Donate({
         onClick={needApprove ? approveSec : submit}
       >
         {phase ??
-          (allowanceLoading
-            ? "checking approval…"
-            : needApprove
-              ? `Approve ${sec?.symbol ?? (pot ? short(pot.secondary) : "…")}`
-              : "Donate to the pot")}
+          (insufficient
+            ? `Insufficient ${sec?.symbol ?? "…"} balance`
+            : allowanceLoading
+              ? "checking approval…"
+              : needApprove
+                ? `Approve ${sec?.symbol ?? (pot ? short(pot.secondary) : "…")}`
+                : "Donate to the pot")}
       </button>
       {needApprove && phase === null && (
         <p className="mono -mt-2 text-center text-[10.5px] text-dim2">

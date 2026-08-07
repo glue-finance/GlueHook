@@ -264,9 +264,11 @@ export const NETS: Net[] = [
   },
   {
     chain: monad, slug: "monad", label: "Monad", testnet: false,
-    // drpc first: it serves getLogs up to ~1k blocks (the scanner adapts);
-    // rpc.monad.xyz refuses getLogs entirely (413) — read fallback only
-    rpcs: rpcsFor(143, "https://monad.drpc.org", "https://rpc.monad.xyz"),
+    // every public Monad endpoint caps getLogs at ~1k blocks — the scanner
+    // learns that and fans out in parallel; three scan-capable endpoints
+    // spread the load. rpc.monad.xyz refuses getLogs entirely (413) — read
+    // fallback only
+    rpcs: rpcsFor(143, "https://monad.drpc.org", "https://monad.gateway.tenderly.co", "https://143.rpc.thirdweb.com", "https://rpc.monad.xyz"),
     hook: CANONICAL_HOOK, poolManager: "0x188d586Ddcf52439676Ca21A244753fA19F9Ea8e",
     deployBlock: 93918120,
     explorer: "https://monadvision.com",

@@ -43,9 +43,10 @@ const EVENTS: AbiEvent[] = [
   ),
 ];
 
-// v2: the frontier is the block the scan actually REACHED (a v1 cache could
-// be stamped "done" with events missing after one bad RPC day — rescan those)
-type FeedCache = { v: 2; lastBlock: string; events: PoolEvent[] };
+// v3: viem DROPS the `args` topic filter when a LIST of events is passed
+// (getLogs source: `args: events_ ? undefined : args`), so earlier caches
+// hold EVERY pool's events mixed together — rescan them clean
+type FeedCache = { v: 3; lastBlock: string; events: PoolEvent[] };
 
 const feedKey = (chainId: number, poolId: string) => `gh.feed.${chainId}.${poolId.toLowerCase()}`;
 
@@ -55,13 +56,13 @@ function loadFeed(chainId: number, poolId: string): FeedCache {
       const raw = localStorage.getItem(feedKey(chainId, poolId));
       if (raw) {
         const c = JSON.parse(raw) as FeedCache;
-        if (c.v === 2) return c;
+        if (c.v === 3) return c;
       }
     } catch {
       /* rescan */
     }
   }
-  return { v: 2, lastBlock: "0", events: [] };
+  return { v: 3, lastBlock: "0", events: [] };
 }
 
 function saveFeed(chainId: number, poolId: string, c: FeedCache) {
@@ -110,6 +111,9 @@ export async function fetchPoolEvents(
         logIndex?: number;
       };
       if (!l.eventName || !l.args) continue;
+      // viem ignores the `args` topic filter for event LISTS — enforce the
+      // poolId here so one pool's feed can never absorb another pool's events
+      if (String(l.args.poolId ?? "").toLowerCase() !== poolId.toLowerCase()) continue;
       const data: Record<string, string> = {};
       for (const [k, v] of Object.entries(l.args)) data[k] = String(v);
       cache.events.push({

@@ -10,12 +10,15 @@ const TITLE = "GlueHook — buy back and autocompound your V4 LP";
 const DESCRIPTION =
   "A free, open-source Uniswap V4 hook that automates buybacks, burns, sell defense and self-compounding liquidity — on-chain, contract-to-contract, no oracles, no keepers, no team actions. Same address on 23 networks.";
 
-// maximumScale 1 stops iOS Safari's automatic zoom-on-input-focus; pinch
-// zoom stays available (Safari ignores the cap for user gestures)
+// maximumScale 1 + userScalable false stop every automatic zoom-on-input-focus
+// (iOS Safari, iOS Chrome, in-app webviews); pinch zoom stays available on iOS
+// (Safari ignores the cap for user gestures). Inputs are additionally floored
+// at 16px on mobile in globals.css — the other half of the no-zoom guarantee.
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
+  userScalable: false,
 };
 
 export const metadata: Metadata = {

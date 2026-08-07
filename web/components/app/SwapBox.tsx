@@ -154,6 +154,9 @@ export function SwapPanel({ net, pool }: { net: Net; pool: RegisteredPool }) {
   const outSym = outMeta?.symbol ?? "…";
   const nativeIn = !!inToken && isNative(inToken);
   const busy = tx.s === "wallet" || tx.s === "pending";
+  // Uniswap rule: an amount above the wallet balance disables the button
+  // and names the problem in its label
+  const insufficient = amountIn > 0n && inBal.data !== undefined && amountIn > inBal.data;
   const inUsd = usdStr(Number(formatUnits(amountIn, inMeta?.decimals ?? 18)), uIn);
   const outUsd =
     quote && outMeta ? usdStr(Number(formatUnits(quote.amountOut, outMeta.decimals)), uOut) : null;
@@ -337,19 +340,22 @@ export function SwapPanel({ net, pool }: { net: Net; pool: RegisteredPool }) {
         disabled={
           !quote ||
           amountIn <= 0n ||
+          insufficient ||
           busy ||
           needsTokenApprove === null ||
           needsPermit2 === null
         }
         onClick={submit}
       >
-        {needsTokenApprove === null || needsPermit2 === null
-          ? "checking approvals…"
-          : needsTokenApprove
-            ? `Approve ${inSym}`
-            : "Swap"}
+        {insufficient
+          ? `Insufficient ${inSym} balance`
+          : needsTokenApprove === null || needsPermit2 === null
+            ? "checking approvals…"
+            : needsTokenApprove
+              ? `Approve ${inSym}`
+              : "Swap"}
       </button>
-      {(needsTokenApprove || needsPermit2) && !busy && (
+      {(needsTokenApprove || needsPermit2) && !insufficient && !busy && (
         <p className="mono mt-1.5 text-center text-[10.5px] text-dim2">
           {needsTokenApprove
             ? `one-time approval for ${inSym} — the swap comes next, with a free signature`

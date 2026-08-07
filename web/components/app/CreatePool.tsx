@@ -1,10 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
 import { erc20Abi, isAddress, maxUint256, zeroAddress, type Address } from "viem";
 import { useAccount } from "wagmi";
 import type { Net } from "@/lib/chains";
-import { short } from "@/lib/format";
+import { fnum, ftoken, short } from "@/lib/format";
 import {
   FEE_TIERS,
   glueHookAbi,
@@ -16,8 +17,8 @@ import {
 } from "@/lib/hook";
 import { registerPool, type RegisteredPool } from "@/lib/registry";
 import { usePot, useProgram, useTokenMeta } from "@/lib/usePool";
-import { useAllowance, useBalanceOf, usePoolState } from "@/lib/usePoolState";
-import { getSqrtRatioAtTick, liquidityForAmounts, sqrtFromPrice } from "@/lib/v4math";
+import { fetchPoolState, useAllowance, useBalanceOf, usePoolState } from "@/lib/usePoolState";
+import { getSqrtRatioAtTick, liquidityForAmounts, priceFromSqrt, sqrtFromPrice } from "@/lib/v4math";
 import {
   ConfigEditor,
   configError,
@@ -26,7 +27,7 @@ import {
   Slider,
   type ConfigDraft,
 } from "./forms/ConfigEditor";
-import { PairAmounts, parseAmt, type PairValue } from "./forms/PairAmounts";
+import { PairAmounts, parseAmt, syncPair, type PairValue } from "./forms/PairAmounts";
 import { TxStatus, useHookTx } from "./forms/useHookTx";
 import { clientForNet } from "@/lib/client";
 import { useGasReserve } from "@/lib/gas";
@@ -125,6 +126,55 @@ function presetDraft(id: PresetId, mainIsNative: boolean, me?: Address): ConfigD
   }
 }
 
+/* ----------------------------------------------------- market price lookup */
+
+/**
+ * Uniswap-style existing-pool discovery: when the SELECTED pool doesn't exist
+ * yet, scan every fee tier for this pair — both hooked (our hook) and vanilla
+ * V4 pools — and surface the deepest live pool's current price as the
+ * suggested launch price. Reads straight out of the PoolManager's storage.
+ */
+function useReferencePrice(net: Net, key: PoolKey | null, enabled: boolean) {
+  const c0 = key?.currency0;
+  const c1 = key?.currency1;
+  return useQuery({
+    queryKey: ["refPrice", net.chain.id, c0, c1],
+    enabled: enabled && !!c0 && !!c1,
+    staleTime: 30_000,
+    refetchInterval: 30_000,
+    queryFn: async () => {
+      const candidates = FEE_TIERS.flatMap((t) =>
+        [net.hook, zeroAddress].map((hooks) => ({
+          fee: t.fee,
+          tickSpacing: t.spacing,
+          label: t.label,
+          hooks,
+        })),
+      );
+      const states = await Promise.all(
+        candidates.map(async (c) => {
+          try {
+            const s = await fetchPoolState(
+              net,
+              poolIdOf({ currency0: c0!, currency1: c1!, fee: c.fee, tickSpacing: c.tickSpacing, hooks: c.hooks }),
+            );
+            return s.initialized && s.liquidity > 0n
+              ? { sqrtPriceX96: s.sqrtPriceX96, liquidity: s.liquidity, feeLabel: c.label, hooked: c.hooks !== zeroAddress }
+              : null;
+          } catch {
+            return null;
+          }
+        }),
+      );
+      // the deepest pool is the most trustworthy price
+      const live = states.filter((s): s is NonNullable<typeof s> => s !== null);
+      if (live.length === 0) return null;
+      live.sort((a, b) => (b.liquidity > a.liquidity ? 1 : b.liquidity < a.liquidity ? -1 : 0));
+      return live[0];
+    },
+  });
+}
+
 /* ------------------------------------------------------------- component */
 
 /**
@@ -205,10 +255,25 @@ export function CreatePool({
 
   /* ------------------------------ deposit ------------------------------ */
   const [amounts, setAmounts] = useState<PairValue>({ a0: "", a1: "" });
+  // which box the user typed in last — that side stays authoritative when the
+  // price changes and the OTHER side is re-derived (exactly Uniswap's rule)
+  const [lastEdited, setLastEdited] = useState<0 | 1>(0);
   const bal0 = useBalanceOf(net, key?.currency0, me);
   const bal1 = useBalanceOf(net, key?.currency1, me);
   const gasReserve = useGasReserve(net);
   const sqrtP = state.data?.initialized ? state.data.sqrtPriceX96 : launchSqrt;
+
+  // the price moved (retyped launch price, flip, or a live pool tick) →
+  // re-derive the dependent amount from the last-edited side
+  useEffect(() => {
+    setAmounts((v) => syncPair(lastEdited, v, sqrtP, dec0, dec1));
+  }, [sqrtP, lastEdited, dec0, dec1]);
+
+  // Uniswap-style: while THIS pool doesn't exist, look for live pools on the
+  // same pair (every fee tier, hooked or vanilla) and propose their price
+  const refPool = useReferencePrice(net, key, !initialized);
+  const refPrices = refPool.data ? priceFromSqrt(refPool.data.sqrtPriceX96, dec0, dec1) : null;
+  const refShown = refPrices ? (flip ? refPrices.price0per1 : refPrices.price1per0) : null;
 
   const liquidity = useMemo(() => {
     if (!key || !sqrtP || sqrtP === 0n) return 0n;
@@ -259,6 +324,9 @@ export function CreatePool({
   // below can't come back stale).
   const amt0 = parseAmt(amounts.a0, dec0);
   const amt1 = parseAmt(amounts.a1, dec1);
+  // a deposit you can't pay for blocks Continue AND the launch button
+  const insufficient0 = amt0 > 0n && bal0.data !== undefined && amt0 > bal0.data;
+  const insufficient1 = amt1 > 0n && bal1.data !== undefined && amt1 > bal1.data;
   const allow0 = useAllowance(net, key?.currency0, me, net.hook);
   const allow1 = useAllowance(net, key?.currency1, me, net.hook);
   const needApprove0 =
@@ -378,7 +446,7 @@ export function CreatePool({
 
   const stepOk = [
     key !== null,
-    (initialized || launchSqrt !== null) && liquidity > 0n,
+    (initialized || launchSqrt !== null) && liquidity > 0n && !insufficient0 && !insufficient1,
     // An existing program keeps its own rules — the config step can't block the add
     programExists || (!cfgErr && !recipientBad),
   ];
@@ -555,6 +623,32 @@ export function CreatePool({
                       <span className="mono shrink-0 text-[15px] font-bold text-blue">{quoteSym}</span>
                     </div>
                   </div>
+
+                  {/* an existing pool on this pair already trades — propose its price */}
+                  {refShown !== null && refPool.data && (
+                    <div className="mono mt-2.5 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-green/40 bg-green/5 px-4 py-3 text-[11px]">
+                      <span className="text-dim">
+                        this pair already trades — 1 {baseSym} ={" "}
+                        <b className="text-green">{fnum(refShown)}</b> {quoteSym}{" "}
+                        <span className="text-dim2">
+                          ({refPool.data.feeLabel}{refPool.data.hooked ? "" : " · no hook"} pool, the deepest live one)
+                        </span>
+                      </span>
+                      <button
+                        className="shrink-0 rounded-full border border-green/50 bg-green/10 px-3 py-1 text-[10.5px] font-extrabold text-green transition-all hover:bg-green/20"
+                        onClick={() =>
+                          setPriceStr(
+                            refShown.toLocaleString("en-US", {
+                              maximumSignificantDigits: 8,
+                              useGrouping: false,
+                            }),
+                          )
+                        }
+                      >
+                        use market price
+                      </button>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="mono rounded-xl border border-green/40 bg-green/5 px-4 py-3 text-[11.5px] text-green">
@@ -578,13 +672,26 @@ export function CreatePool({
                   dec1={dec1}
                   sqrtP={sqrtP}
                   value={amounts}
-                  onChange={setAmounts}
+                  onChange={(v, edited) => {
+                    setAmounts(v);
+                    setLastEdited(edited);
+                  }}
                   bal0={bal0.data}
                   bal1={bal1.data}
                   native0={key ? isNative(key.currency0) : false}
                   native1={key ? isNative(key.currency1) : false}
                   gasReserve={gasReserve.data}
                 />
+                {insufficient0 && (
+                  <p className="mono mt-2 text-[10.5px] font-bold text-warn">
+                    not enough {sym0} — you have {ftoken(bal0.data!, dec0)}, this deposit needs {amounts.a0}
+                  </p>
+                )}
+                {insufficient1 && (
+                  <p className="mono mt-2 text-[10.5px] font-bold text-warn">
+                    not enough {sym1} — you have {ftoken(bal1.data!, dec1)}, this deposit needs {amounts.a1}
+                  </p>
+                )}
                 {key && isNative(key.currency0) && (
                   <p className="mono mt-2 text-[10.5px] text-dim2">
                     the {net.chain.nativeCurrency.symbol} side is a hard cap — any excess is refunded.
@@ -835,6 +942,8 @@ export function CreatePool({
                   !key ||
                   (!initialized && !launchSqrt) ||
                   liquidity <= 0n ||
+                  insufficient0 ||
+                  insufficient1 ||
                   allowancesLoading ||
                   // An add sends no config and touches no roles; only the create path validates them
                   (programExists ? notProgramOwner : recipientBad || !!cfgErr) ||
@@ -844,7 +953,9 @@ export function CreatePool({
                 onClick={needApprove0 || needApprove1 ? approveNext : doLaunch}
               >
                 {phase ??
-                  (allowancesLoading
+                  (insufficient0 || insufficient1
+                    ? `insufficient ${insufficient0 ? sym0 : sym1} balance`
+                    : allowancesLoading
                     ? "checking approvals…"
                     : needApprove0
                       ? `Approve ${sym0}`

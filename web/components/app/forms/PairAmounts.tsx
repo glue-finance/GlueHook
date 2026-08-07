@@ -16,6 +16,31 @@ export function parseAmt(s: string, dec: number): bigint {
 }
 
 /**
+ * Re-derive the dependent side of a pair from the side that was last edited,
+ * through the raw pool price ((√P/Q96)²). Shared by the input boxes and by
+ * callers that need to re-sync after the PRICE moved (a retyped launch price,
+ * a flip, or a live pool tick) — Uniswap keeps the last-edited field and
+ * recomputes the other one, and so do we.
+ */
+export function syncPair(
+  edited: 0 | 1,
+  value: PairValue,
+  sqrtP: bigint | null,
+  dec0: number,
+  dec1: number,
+): PairValue {
+  if (!sqrtP || sqrtP === 0n) return value;
+  if (edited === 0) {
+    const amt0 = parseAmt(value.a0, dec0);
+    const amt1 = (amt0 * sqrtP * sqrtP) / Q96 / Q96;
+    return { a0: value.a0, a1: amt0 > 0n ? trim(formatUnits(amt1, dec1)) : "" };
+  }
+  const amt1 = parseAmt(value.a1, dec1);
+  const amt0 = (amt1 * Q96 * Q96) / sqrtP / sqrtP;
+  return { a1: value.a1, a0: amt1 > 0n ? trim(formatUnits(amt0, dec0)) : "" };
+}
+
+/**
  * The classic two-box deposit input: edit one side and the other follows the
  * pool price (raw price = (√P/Q96)²), exactly like Uniswap's add-liquidity.
  */
@@ -42,7 +67,8 @@ export function PairAmounts({
   /** live (or chosen launch) √price — null disables auto-fill */
   sqrtP: bigint | null;
   value: PairValue;
-  onChange: (v: PairValue) => void;
+  /** `edited` names the side the user touched, so the caller can keep it authoritative */
+  onChange: (v: PairValue, edited: 0 | 1) => void;
   bal0?: bigint;
   bal1?: bigint;
   /** the native side's MAX keeps a little behind for gas */
@@ -54,26 +80,12 @@ export function PairAmounts({
   usd0?: number | null;
   usd1?: number | null;
 }) {
-  // derive the counter-amount through the raw pool price
-  function fill0(a0: string): PairValue {
-    if (!sqrtP || sqrtP === 0n) return { ...value, a0 };
-    const amt0 = parseAmt(a0, dec0);
-    const amt1 = (amt0 * sqrtP * sqrtP) / Q96 / Q96;
-    return { a0, a1: amt0 > 0n ? trim(formatUnits(amt1, dec1)) : "" };
-  }
-  function fill1(a1: string): PairValue {
-    if (!sqrtP || sqrtP === 0n) return { ...value, a1 };
-    const amt1 = parseAmt(a1, dec1);
-    const amt0 = (amt1 * Q96 * Q96) / sqrtP / sqrtP;
-    return { a1, a0: amt1 > 0n ? trim(formatUnits(amt0, dec0)) : "" };
-  }
-
   return (
     <div className="space-y-2">
       <AmountBox
         sym={sym0}
         value={value.a0}
-        onChange={(s) => onChange(fill0(s))}
+        onChange={(s) => onChange(syncPair(0, { ...value, a0: s }, sqrtP, dec0, dec1), 0)}
         bal={bal0}
         dec={dec0}
         native={native0}
@@ -83,7 +95,7 @@ export function PairAmounts({
       <AmountBox
         sym={sym1}
         value={value.a1}
-        onChange={(s) => onChange(fill1(s))}
+        onChange={(s) => onChange(syncPair(1, { ...value, a1: s }, sqrtP, dec0, dec1), 1)}
         bal={bal1}
         dec={dec1}
         native={native1}

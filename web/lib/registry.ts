@@ -1,15 +1,18 @@
 import {
   decodeAbiParameters,
+  decodeEventLog,
   parseAbiItem,
   slice,
+  toEventSelector,
   toFunctionSelector,
   type Address,
   type Hex,
+  type Log,
 } from "viem";
 import type { Net } from "./chains";
-import { clientForNet } from "./client";
+import { clientForNet, scanClientsFor } from "./client";
 import { poolIdOf, type PoolKey } from "./hook";
-import { scanLogs } from "./logs";
+import { findLogsBackward, scanLogs } from "./logs";
 
 export type RegisteredPool = {
   poolId: Hex;
@@ -18,11 +21,11 @@ export type RegisteredPool = {
   block: number;
 };
 
-// v4: viem drops the `args` topic filter for event LISTS, so the PoolManager
-// Initialize fallback used to take the FIRST pool since deployBlock — a v3
-// cache may hold a WRONG key for a poolId. Rescan clean.
+// v5: the PotOpened scan and the Initialize fallback both filter by topic on
+// the NODE now, and the fallback is a single batched lookup instead of one
+// full-history scan per pool. Rescan clean.
 type Cache = {
-  v: 4;
+  v: 5;
   lastBlock: string;
   pools: Record<string, { key: PoolKey | null; admin: Address; block: number }>;
 };
@@ -47,13 +50,13 @@ function loadCache(chainId: number): Cache {
       const raw = localStorage.getItem(cacheKey(chainId));
       if (raw) {
         const c = JSON.parse(raw) as Cache;
-        if (c.v === 4) return c;
+        if (c.v === 5) return c;
       }
     } catch {
       /* corrupted cache → rescan */
     }
   }
-  return { v: 4, lastBlock: "0", pools: {} };
+  return { v: 5, lastBlock: "0", pools: {} };
 }
 
 function saveCache(chainId: number, c: Cache) {
@@ -101,46 +104,75 @@ function keyFromCalldata(data: Hex, poolId: Hex): PoolKey | null {
   }
 }
 
-/** Fallback: ask the PoolManager for the Initialize event of this poolId. */
-async function keyFromPoolManager(net: Net, poolId: Hex): Promise<PoolKey | null> {
-  const client = clientForNet(net);
+const POT_OPENED_TOPIC0 = toEventSelector(potOpenedEvent);
+const INITIALIZE_TOPIC0 = toEventSelector(pmInitializeEvent);
+
+/** Decode an Initialize log into a PoolKey, verified against its own poolId. */
+function keyFromInitializeLog(log: Log): { id: Hex; key: PoolKey } | null {
   try {
-    const latest = await client.getBlockNumber();
-    const { logs } = await scanLogs(client, {
-      address: net.poolManager,
-      events: [pmInitializeEvent],
-      args: { id: poolId },
-      fromBlock: BigInt(net.deployBlock),
-      toBlock: latest,
+    const { args } = decodeEventLog({
+      abi: [pmInitializeEvent],
+      topics: log.topics as [Hex, ...Hex[]],
+      data: log.data,
     });
-    // viem ignores the `args` topic filter for event LISTS, so the scan may
-    // return EVERY Initialize since deployBlock — match the id ourselves and
-    // verify the recovered key hashes back to the poolId (can't be poisoned)
-    for (const raw of logs) {
-      const l = raw as unknown as {
-        args?: {
-          id: Hex;
-          currency0: Address;
-          currency1: Address;
-          fee: number;
-          tickSpacing: number;
-          hooks: Address;
-        };
-      };
-      if (!l?.args || l.args.id?.toLowerCase() !== poolId.toLowerCase()) continue;
-      const k: PoolKey = {
-        currency0: l.args.currency0,
-        currency1: l.args.currency1,
-        fee: Number(l.args.fee),
-        tickSpacing: Number(l.args.tickSpacing),
-        hooks: l.args.hooks,
-      };
-      if (poolIdOf(k).toLowerCase() === poolId.toLowerCase()) return k;
-    }
-    return null;
+    const a = args as unknown as {
+      id: Hex;
+      currency0: Address;
+      currency1: Address;
+      fee: number;
+      tickSpacing: number;
+      hooks: Address;
+    };
+    const key: PoolKey = {
+      currency0: a.currency0,
+      currency1: a.currency1,
+      fee: Number(a.fee),
+      tickSpacing: Number(a.tickSpacing),
+      hooks: a.hooks,
+    };
+    // the key must hash back to the id it was filed under — a mismatched or
+    // spoofed log can never poison the registry
+    return poolIdOf(key).toLowerCase() === a.id.toLowerCase() ? { id: a.id, key } : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * Fallback key recovery: ask the PoolManager for the `Initialize` events of
+ * the given poolIds.
+ *
+ * ONE lookup resolves the whole batch — the ids ride in a topic OR-list
+ * (`[topic0, [id...]]`) so the NODE does the filtering and returns at most one
+ * log per pool. The walk runs BACKWARDS from the newest block a pot was opened
+ * at, because a pool is always initialized at or before its own pot opens and
+ * in practice in the same transaction. That turns what used to be a full
+ * PoolManager history replay PER POOL into a couple of requests for all of them.
+ */
+async function keysFromPoolManager(
+  net: Net,
+  ids: Hex[],
+  toBlock: bigint,
+): Promise<Map<string, PoolKey>> {
+  const found = new Map<string, PoolKey>();
+  if (ids.length === 0) return found;
+  try {
+    const logs = await findLogsBackward(scanClientsFor(net), {
+      address: net.poolManager,
+      topics: [INITIALIZE_TOPIC0, ids.map((i) => i.toLowerCase() as Hex)],
+      fromBlock: BigInt(net.deployBlock),
+      toBlock,
+      maxRange: BigInt(net.logRange),
+      done: (ls) => ls.length >= ids.length,
+    });
+    for (const log of logs) {
+      const hit = keyFromInitializeLog(log);
+      if (hit) found.set(hit.id.toLowerCase(), hit.key);
+    }
+  } catch {
+    /* leave unresolved — the pot still works, key-bound ops do not */
+  }
+  return found;
 }
 
 /**
@@ -160,30 +192,59 @@ export async function scanPools(
   const latest = await client.getBlockNumber();
 
   if (from <= latest) {
-    const { logs, scannedTo } = await scanLogs(client, {
+    const { logs, scannedTo } = await scanLogs(scanClientsFor(net), {
       address: net.hook,
-      events: [potOpenedEvent],
+      topics: [POT_OPENED_TOPIC0],
       fromBlock: from,
       toBlock: latest,
+      maxRange: BigInt(net.logRange),
       onProgress,
     });
 
+    // resolve keys from calldata first (one getTransaction each), collecting
+    // the misses so they can share a SINGLE PoolManager lookup below
+    const unresolved: Hex[] = [];
+    let newestMiss = BigInt(net.deployBlock);
+
     for (const log of logs) {
-      const args = (log as unknown as { args?: { poolId: Hex; admin: Address } }).args;
-      if (!args?.poolId || !log.transactionHash) continue;
+      let poolId: Hex;
+      let admin: Address;
+      try {
+        const { args } = decodeEventLog({
+          abi: [potOpenedEvent],
+          topics: log.topics as [Hex, ...Hex[]],
+          data: log.data,
+        });
+        ({ poolId, admin } = args as unknown as { poolId: Hex; admin: Address });
+      } catch {
+        continue;
+      }
+      if (!poolId || !log.transactionHash) continue;
+      const block = Number(log.blockNumber ?? 0n);
+
       let key: PoolKey | null = null;
       try {
         const tx = await client.getTransaction({ hash: log.transactionHash });
-        key = keyFromCalldata(tx.input, args.poolId);
+        key = keyFromCalldata(tx.input, poolId);
       } catch {
-        /* tx fetch failed → try PoolManager below */
+        /* tx fetch failed → PoolManager fallback */
       }
-      if (!key) key = await keyFromPoolManager(net, args.poolId);
-      cache.pools[args.poolId.toLowerCase()] = {
-        key,
-        admin: args.admin,
-        block: Number(log.blockNumber ?? 0n),
-      };
+      if (!key) {
+        unresolved.push(poolId);
+        const b = log.blockNumber ?? latest;
+        if (b > newestMiss) newestMiss = b;
+      }
+      cache.pools[poolId.toLowerCase()] = { key, admin, block };
+    }
+
+    if (unresolved.length > 0) {
+      // every Initialize sits at or before the newest pot block, so that is a
+      // complete upper bound for the backwards walk
+      const recovered = await keysFromPoolManager(net, unresolved, newestMiss);
+      for (const [id, key] of recovered) {
+        const entry = cache.pools[id];
+        if (entry) entry.key = key;
+      }
     }
     // persist how far the scan actually GOT — an interrupted scan resumes
     // from the failure point instead of stamping the gap as "done"
@@ -222,7 +283,8 @@ export async function importPool(net: Net, poolId: Hex): Promise<RegisteredPool 
   const hit = cache.pools[id];
   if (hit?.key) return { poolId: id, ...hit };
 
-  const key = await keyFromPoolManager(net, id);
+  const latest = await clientForNet(net).getBlockNumber();
+  const key = (await keysFromPoolManager(net, [id], latest)).get(id);
   if (!key) return hit ? { poolId: id, ...hit } : null;
   const entry = { key, admin: (hit?.admin ?? "0x0000000000000000000000000000000000000000") as Address, block: hit?.block ?? net.deployBlock };
   cache.pools[id] = entry;

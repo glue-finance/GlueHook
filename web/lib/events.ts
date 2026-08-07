@@ -1,6 +1,6 @@
-import { parseAbiItem, type AbiEvent, type Hex } from "viem";
+import { decodeEventLog, parseAbiItem, toEventSelector, type AbiEvent, type Hex, type Log } from "viem";
 import type { Net } from "./chains";
-import { clientForNet } from "./client";
+import { clientForNet, scanClientsFor } from "./client";
 import { scanLogs } from "./logs";
 
 export type PoolEventKind =
@@ -43,10 +43,18 @@ const EVENTS: AbiEvent[] = [
   ),
 ];
 
-// v3: viem DROPS the `args` topic filter when a LIST of events is passed
-// (getLogs source: `args: events_ ? undefined : args`), so earlier caches
-// hold EVERY pool's events mixed together — rescan them clean
-type FeedCache = { v: 3; lastBlock: string; events: PoolEvent[] };
+/**
+ * topic0 of every hook event. Every one of them carries `poolId` as its FIRST
+ * indexed parameter, so `[TOPIC0S, poolIdTopic]` is a complete server-side
+ * filter: the node returns this pool's events and nothing else.
+ */
+const TOPIC0S: Hex[] = EVENTS.map((e) => toEventSelector(e));
+const BY_TOPIC0 = new Map<Hex, AbiEvent>(EVENTS.map((e, i) => [TOPIC0S[i], e]));
+
+// v4: the scan now filters by topic on the NODE. v3 caches were built by a
+// client-side filter over every pool's logs — correct, but recorded against a
+// frontier reached under a different failure model; rescan clean.
+type FeedCache = { v: 4; lastBlock: string; events: PoolEvent[] };
 
 const feedKey = (chainId: number, poolId: string) => `gh.feed.${chainId}.${poolId.toLowerCase()}`;
 
@@ -56,13 +64,13 @@ function loadFeed(chainId: number, poolId: string): FeedCache {
       const raw = localStorage.getItem(feedKey(chainId, poolId));
       if (raw) {
         const c = JSON.parse(raw) as FeedCache;
-        if (c.v === 3) return c;
+        if (c.v === 4) return c;
       }
     } catch {
       /* rescan */
     }
   }
-  return { v: 3, lastBlock: "0", events: [] };
+  return { v: 4, lastBlock: "0", events: [] };
 }
 
 function saveFeed(chainId: number, poolId: string, c: FeedCache) {
@@ -93,31 +101,32 @@ export async function fetchPoolEvents(
   const latest = await client.getBlockNumber();
 
   if (from <= latest) {
-    const { logs, scannedTo } = await scanLogs(client, {
+    const { logs, scannedTo } = await scanLogs(scanClientsFor(net), {
       address: net.hook,
-      events: EVENTS,
-      args: { poolId },
+      topics: [TOPIC0S, poolId],
       fromBlock: from,
       toBlock: latest,
+      maxRange: BigInt(net.logRange),
       onProgress,
     });
 
     for (const log of logs) {
-      const l = log as unknown as {
-        eventName?: string;
-        args?: Record<string, unknown>;
-        blockNumber?: bigint;
-        transactionHash?: Hex;
-        logIndex?: number;
-      };
-      if (!l.eventName || !l.args) continue;
-      // viem ignores the `args` topic filter for event LISTS — enforce the
-      // poolId here so one pool's feed can never absorb another pool's events
-      if (String(l.args.poolId ?? "").toLowerCase() !== poolId.toLowerCase()) continue;
+      const l = log as Log;
+      const abi = BY_TOPIC0.get(l.topics[0] as Hex);
+      if (!abi) continue;
+      let args: Record<string, unknown>;
+      let eventName: string;
+      try {
+        const d = decodeEventLog({ abi: [abi], topics: l.topics as [Hex, ...Hex[]], data: l.data });
+        eventName = d.eventName as string;
+        args = (d.args ?? {}) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
       const data: Record<string, string> = {};
-      for (const [k, v] of Object.entries(l.args)) data[k] = String(v);
+      for (const [k, v] of Object.entries(args)) data[k] = String(v);
       cache.events.push({
-        kind: l.eventName as PoolEventKind,
+        kind: eventName as PoolEventKind,
         block: Number(l.blockNumber ?? 0n),
         txHash: (l.transactionHash ?? "0x") as Hex,
         logIndex: l.logIndex ?? 0,
@@ -153,17 +162,30 @@ export async function resolveTimestamps(
     .slice(0, limit);
   if (pending.length === 0) return events;
 
+  // chunked, NOT one Promise.all over all 120: a free RPC reads a fan-out of
+  // that size as abuse and answers 429/500, which loses every timestamp at once
   const stamps = new Map<number, number>();
-  await Promise.all(
-    pending.map(async (b) => {
-      try {
-        const blk = await client.getBlock({ blockNumber: BigInt(b) });
-        stamps.set(b, Number(blk.timestamp));
-      } catch {
-        /* leave null */
-      }
-    }),
-  );
+  const CHUNK = 8;
+  for (let i = 0; i < pending.length; i += CHUNK) {
+    const batch = pending.slice(i, i + CHUNK);
+    const got = await Promise.all(
+      batch.map(async (b) => {
+        try {
+          const blk = await client.getBlock({ blockNumber: BigInt(b) });
+          return [b, Number(blk.timestamp)] as const;
+        } catch {
+          return null;
+        }
+      }),
+    );
+    let failed = 0;
+    for (const g of got) {
+      if (g) stamps.set(g[0], g[1]);
+      else failed++;
+    }
+    // the endpoint is refusing — stop rather than grind through 100 more
+    if (failed === batch.length) break;
+  }
   for (const e of events) {
     if (e.timestamp === null && stamps.has(e.block)) e.timestamp = stamps.get(e.block)!;
   }

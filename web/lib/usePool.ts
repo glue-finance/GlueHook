@@ -173,9 +173,14 @@ export function useFeed(net: Net, pool: RegisteredPool | null) {
       return;
     }
     let dead = false;
+    let inFlight = false;
     setLoading(true);
 
     async function pull(first: boolean) {
+      // on a slow chain the initial scan can outlive several poll ticks —
+      // overlapping scans would re-fetch the same ranges and hammer the RPC
+      if (inFlight) return;
+      inFlight = true;
       try {
         const evs = await fetchPoolEvents(
           net,
@@ -192,6 +197,8 @@ export function useFeed(net: Net, pool: RegisteredPool | null) {
         }
       } catch {
         /* transient RPC failure — next poll retries */
+      } finally {
+        inFlight = false;
       }
       if (!dead && first) setLoading(false);
     }

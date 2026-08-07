@@ -1,7 +1,8 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import type { Hex } from "viem";
 import { ConnectBtn } from "@/components/ConnectBtn";
 import { Footer } from "@/components/Footer";
 import { Nav } from "@/components/Nav";
@@ -15,9 +16,9 @@ import { ProgramInfoCard } from "@/components/app/ProgramInfo";
 import { SettingsBox } from "@/components/app/SettingsBox";
 import { SimLab } from "@/components/app/SimLab";
 import { TradeTape } from "@/components/app/TradeTape";
-import { NETS, type Net } from "@/lib/chains";
+import { NETS, netBySlug, type Net } from "@/lib/chains";
 import { short } from "@/lib/format";
-import type { RegisteredPool } from "@/lib/registry";
+import { importPool, type RegisteredPool } from "@/lib/registry";
 import { useFeed, usePot, useProgram, useTokenMeta } from "@/lib/usePool";
 
 /** matches Tailwind's `lg` breakpoint — below it the pool view uses its own tabs */
@@ -34,17 +35,143 @@ function useIsMobile() {
 }
 
 type MobileTab = "info" | "trade" | "charts" | "manage";
+type Tab = "live" | "simulate";
+
+const DEFAULT_NET = NETS.find((n) => n.slug === "robinhood") ?? NETS[0];
+const POOL_ID = /^0x[0-9a-fA-F]{64}$/;
+
+/**
+ * The app's whole view state lives in the URL: `?chain=<slug>&pool=<poolId>`
+ * (plus `tab=simulate`). A pool is identified by its poolId AND its chain —
+ * the same id means nothing without knowing which chain to read it from — so
+ * both have to travel together for a link to be shareable.
+ */
+function hrefFor(net: Net, poolId: string | null, tab: Tab) {
+  const sp = new URLSearchParams();
+  sp.set("chain", net.slug);
+  if (poolId) sp.set("pool", poolId);
+  if (tab === "simulate") sp.set("tab", "simulate");
+  return `${window.location.pathname}?${sp}`;
+}
+
+/**
+ * Share the current view. The URL already IS the pool (chain + poolId), so
+ * there is nothing to build here — it hands off to the OS share sheet where
+ * one exists (phones) and falls back to the clipboard everywhere else.
+ */
+function ShareButton({ label }: { label: string }) {
+  const [done, setDone] = useState(false);
+
+  useEffect(() => {
+    if (!done) return;
+    const t = setTimeout(() => setDone(false), 1_800);
+    return () => clearTimeout(t);
+  }, [done]);
+
+  async function share() {
+    const url = window.location.href;
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: label, url });
+        return;
+      } catch {
+        // dismissed, or the sheet refused — fall through to the clipboard
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      setDone(true);
+    } catch {
+      /* clipboard blocked (insecure origin) — nothing useful to do */
+    }
+  }
+
+  return (
+    <button className="btn btn-ghost btn-sm shrink-0" title="copy a link to this pool" onClick={share}>
+      {done ? (
+        "link copied ✓"
+      ) : (
+        <span className="inline-flex items-center gap-1.5">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden>
+            <path
+              d="M9 2h5v5M14 2L7.5 8.5M12 9.5V13a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3.5"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+          share
+        </span>
+      )}
+    </button>
+  );
+}
 
 function AppInner() {
   const params = useSearchParams();
-  const [tab, setTab] = useState<"live" | "simulate">(
-    params.get("tab") === "simulate" ? "simulate" : "live",
-  );
-  const [net, setNet] = useState<Net>(NETS.find((n) => n.slug === "robinhood") ?? NETS[0]);
+  const [tab, setTab] = useState<Tab>(params.get("tab") === "simulate" ? "simulate" : "live");
+  const [net, setNet] = useState<Net>(() => netBySlug(params.get("chain") ?? "") ?? DEFAULT_NET);
   const [pool, setPool] = useState<RegisteredPool | null>(null);
   const [creating, setCreating] = useState(false);
   const [mtab, setMtab] = useState<MobileTab>("info");
   const isMobile = useIsMobile();
+
+  // a shared link names a pool the picker may not have scanned yet, so it is
+  // resolved on its own (importPool answers from cache when it can)
+  const [opening, setOpening] = useState(() => POOL_ID.test(params.get("pool") ?? ""));
+
+  /** Adopt whatever the address bar currently says — mount and back/forward. */
+  const openRef = useRef(0);
+  const applyUrl = useCallback(async () => {
+    const sp = new URLSearchParams(window.location.search);
+    const n = netBySlug(sp.get("chain") ?? "") ?? DEFAULT_NET;
+    const id = sp.get("pool") ?? "";
+    setNet(n);
+    setTab(sp.get("tab") === "simulate" ? "simulate" : "live");
+    setCreating(false);
+
+    if (!POOL_ID.test(id)) {
+      setPool(null);
+      setOpening(false);
+      return;
+    }
+    // stamp the attempt so a slow resolve can never overwrite a newer one
+    const ticket = ++openRef.current;
+    setOpening(true);
+    try {
+      const p = await importPool(n, id as Hex);
+      if (ticket === openRef.current) setPool(p);
+    } finally {
+      if (ticket === openRef.current) setOpening(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    applyUrl();
+    window.addEventListener("popstate", applyUrl);
+    return () => window.removeEventListener("popstate", applyUrl);
+  }, [applyUrl]);
+
+  // ...and write it back whenever the view moves. Landing on a different pool
+  // or chain is a real navigation (push, so Back returns to the list); flipping
+  // Live/Simulate is not (replace).
+  const lastIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    // never write while a link is still being opened: `pool` is legitimately
+    // null mid-resolve, and writing that would erase the very id being loaded
+    if (opening) return;
+    const id = `${net.slug}|${pool?.poolId ?? ""}`;
+    const href = hrefFor(net, pool?.poolId ?? null, tab);
+    if (href !== window.location.pathname + window.location.search) {
+      if (lastIdRef.current === null || lastIdRef.current === id) {
+        window.history.replaceState(null, "", href);
+      } else {
+        window.history.pushState(null, "", href);
+      }
+    }
+    lastIdRef.current = id;
+  }, [net, pool?.poolId, tab, opening]);
 
   const pot = usePot(net, pool?.poolId ?? null);
   const program = useProgram(net, pool?.poolId ?? null);
@@ -85,10 +212,13 @@ function AppInner() {
               }}
             />
             {pool && (
-              <span className="pill hi">
-                pool {short(pool.poolId, 6)}
-                {pool.key && ` · ${(pool.key.fee / 10_000).toFixed(2)}%`}
-              </span>
+              <>
+                <span className="pill hi">
+                  pool {short(pool.poolId, 6)}
+                  {pool.key && ` · ${(pool.key.fee / 10_000).toFixed(2)}%`}
+                </span>
+                <ShareButton label={`${net.label} pool ${short(pool.poolId, 6)}`} />
+              </>
             )}
           </div>
           <div className="flex items-center gap-2">
@@ -134,6 +264,14 @@ function AppInner() {
             <div className="space-y-6">
               <PoolPicker net={net} selected={pool} onSelect={(p) => { setPool(p); }} />
             </div>
+            {opening ? (
+              <div className="panel flex min-h-[420px] flex-col items-center justify-center gap-4 p-10 text-center">
+                <div className="grad-text mono text-3xl font-extrabold">opening pool…</div>
+                <p className="mono max-w-md text-[12px] leading-relaxed text-dim2">
+                  reading {short(params.get("pool") ?? "", 8)} from {net.label}
+                </p>
+              </div>
+            ) : (
             <div className="panel flex min-h-[420px] flex-col items-center justify-center gap-5 p-10 text-center">
               <div className="grad-text mono text-4xl font-extrabold">select a pool</div>
               <p className="max-w-md text-[14px] leading-relaxed text-dim">
@@ -157,6 +295,7 @@ function AppInner() {
               </div>
               <div className="w-full max-w-xs">{newPoolBtn}</div>
             </div>
+            )}
           </div>
         ) : isMobile ? (
           /* ------------------------------------------- mobile pool view */

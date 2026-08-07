@@ -113,6 +113,20 @@ export type Net = {
   /** Uniswap Universal Router (V4_SWAP entry) — absent = no swap UI on this net */
   universalRouter?: `0x${string}`;
   /**
+   * Largest eth_getLogs block range the PRIMARY endpoint serves, MEASURED by
+   * `scripts/probe-rpc-limits.mjs` (re-run it when the RPC list changes).
+   * The scanner starts here instead of probing down from its own maximum —
+   * a chain capped at 1k used to eat a ladder of 400/500s on every single
+   * scan just to rediscover the cap.
+   */
+  logRange: number;
+  /**
+   * How many of the LEADING `rpcs` entries serve archive `eth_getLogs` at
+   * `logRange`. A scan spreads its parallel fan-out across exactly these, so
+   * they must all honour the same range. Defaults to 1 (primary only).
+   */
+  logEndpoints?: number;
+  /**
    * The chain has NO spendable native coin (Tempo: fees are paid in USD
    * stablecoins, "TEMPO" is not a real asset) — never offer the native side
    * in token pickers and never pre-select it.
@@ -134,19 +148,22 @@ function rpcsFor(chainId: number, ...urls: string[]): string[] {
 export const NETS: Net[] = [
   {
     chain: mainnet, slug: "ethereum", label: "Ethereum", testnet: false,
-    // tenderly + mevblocker serve eth_getLogs (45k / 10k ranges); publicnode
-    // and drpc refuse getLogs on mainnet entirely — kept as read fallbacks only
-    rpcs: rpcsFor(1, "https://gateway.tenderly.co/public/mainnet", "https://rpc.mevblocker.io", "https://ethereum-rpc.publicnode.com", "https://eth.drpc.org"),
+    // tenderly 50k, mevblocker + drpc 10k; publicnode caps mainnet getLogs at
+    // 50 blocks and single-flights them — read fallback only, so it goes last
+    rpcs: rpcsFor(1, "https://gateway.tenderly.co/public/mainnet", "https://rpc.mevblocker.io", "https://eth.drpc.org", "https://ethereum-rpc.publicnode.com"),
     hook: CANONICAL_HOOK, poolManager: "0x000000000004444c5dc75cB358380D2e3dE08A90",
     deployBlock: 25703029, explorer: "https://etherscan.io",
     universalRouter: "0x66a9893cc07d91d95644aedd05d03f95e1dba8af",
+    logRange: 50_000,
   },
   {
     chain: base, slug: "base", label: "Base", testnet: false,
-    rpcs: rpcsFor(8453, "https://mainnet.base.org", "https://base-rpc.publicnode.com", "https://base.drpc.org"),
+    // base.org + drpc 10k; publicnode caps Base getLogs at 50 blocks — last
+    rpcs: rpcsFor(8453, "https://mainnet.base.org", "https://base.drpc.org", "https://base-rpc.publicnode.com"),
     hook: CANONICAL_HOOK, poolManager: "0x498581fF718922c3f8e6A244956aF099B2652b2b",
     deployBlock: 49657824, explorer: "https://basescan.org",
     universalRouter: "0x6ff5693b99212da76ad316178a184ab56d299b43",
+    logRange: 10_000,
   },
   {
     chain: unichain, slug: "unichain", label: "Unichain", testnet: false,
@@ -157,45 +174,62 @@ export const NETS: Net[] = [
     hook: CANONICAL_HOOK, poolManager: "0x1F98400000000000000000000000000000000004",
     deployBlock: 55356883, explorer: "https://uniscan.xyz",
     universalRouter: "0xef740bf23acae26f6492b10de645d6b98dc8eaf3",
+    logRange: 50_000,
   },
   {
     chain: arbitrum, slug: "arbitrum", label: "Arbitrum", testnet: false,
-    rpcs: rpcsFor(42161, "https://arb1.arbitrum.io/rpc", "https://arbitrum-one-rpc.publicnode.com", "https://arbitrum.drpc.org"),
+    // arb1 50k; drpc 500; publicnode caps Arbitrum getLogs at 50 blocks — last
+    rpcs: rpcsFor(42161, "https://arb1.arbitrum.io/rpc", "https://arbitrum.drpc.org", "https://arbitrum-one-rpc.publicnode.com"),
     hook: CANONICAL_HOOK, poolManager: "0x360E68faCcca8cA495c1B759Fd9EEe466db9FB32",
     deployBlock: 492046075, explorer: "https://arbiscan.io",
     universalRouter: "0xa51afafe0263b40edaef0df8781ea9aa03e381a3",
+    logRange: 50_000,
   },
   {
     chain: optimism, slug: "optimism", label: "Optimism", testnet: false,
-    // publicnode first: mainnet.optimism.io rate-limits (429) under scan load
+    // publicnode first (50k here); mainnet.optimism.io rate-limits under scan load
     rpcs: rpcsFor(10, "https://optimism-rpc.publicnode.com", "https://mainnet.optimism.io", "https://optimism.drpc.org"),
     hook: CANONICAL_HOOK, poolManager: "0x9a13F98Cb987694C9F086b1F5eB990EeA8264Ec3",
     deployBlock: 155253116, explorer: "https://optimistic.etherscan.io",
     universalRouter: "0x851116d9223fabed8e56c0e6b8ad0c31d98b3507",
+    logRange: 50_000,
   },
   {
     chain: bsc, slug: "bnb", label: "BNB Chain", testnet: false,
-    // publicnode first: bsc-dataseed answers getLogs with "limit exceeded" at ANY range
-    rpcs: rpcsFor(56, "https://bsc-rpc.publicnode.com", "https://bsc-dataseed.bnbchain.org", "https://bsc.drpc.org"),
+    // BNB is the hardest chain to read from a browser: publicnode answers
+    // anything older than the recent tip with 403 "Archive requests require a
+    // personal token", every bsc-dataseed mirror answers getLogs "limit
+    // exceeded" at ANY range, and drpc's public BNB tier is permanently
+    // rate-limited. nodereal's public endpoint serves 50k archive ranges, the
+    // 48.club pair 5k, and thirdweb 1k (but on a tight request budget) — the
+    // rest are read-only fallbacks. BSC also mints ~115k blocks/day, so a
+    // private NEXT_PUBLIC_RPC_56 is worth setting here more than anywhere.
+    rpcs: rpcsFor(56, "https://bsc-mainnet.nodereal.io/v1/64a9df0874fb4a93b9d0a3849de012d3", "https://rpc-bsc.48.club", "https://0.48.club", "https://56.rpc.thirdweb.com", "https://bsc-rpc.publicnode.com", "https://bsc-dataseed.bnbchain.org"),
     hook: CANONICAL_HOOK, poolManager: "0x28e2Ea090877bF75740558f6BFB36A5ffeE9e9dF",
     deployBlock: 114546905, explorer: "https://bscscan.com",
     universalRouter: "0x1906c1d672b88cd1b9ac7593301ca990f94eae07",
+    logRange: 50_000,
   },
   {
     chain: polygon, slug: "polygon", label: "Polygon", testnet: false,
-    // publicnode first (10k getLogs range); polygon-rpc.com returns 401 outright
-    rpcs: rpcsFor(137, "https://polygon-bor-rpc.publicnode.com", "https://polygon.drpc.org", "https://polygon-rpc.com"),
+    // publicnode 10k, drpc 100. polygon-rpc.com is GONE (401 "tenant disabled")
+    rpcs: rpcsFor(137, "https://polygon-bor-rpc.publicnode.com", "https://polygon.drpc.org"),
     hook: CANONICAL_HOOK, poolManager: "0x67366782805870060151383F4BbFF9daB53e5cD6",
     deployBlock: 91600016, explorer: "https://polygonscan.com",
     universalRouter: "0x1095692a6237d83c6a72f3f5efedb9a670c49223",
+    logRange: 10_000,
   },
   {
     chain: worldchain, slug: "worldchain", label: "World Chain", testnet: false,
-    // drpc first (10k getLogs range); the alchemy public gateway refuses getLogs at any range
-    rpcs: rpcsFor(480, "https://worldchain.drpc.org", "https://worldchain-mainnet.g.alchemy.com/public"),
+    // tenderly 50k and reliable; drpc nominally does 10k but intermittently
+    // routes to an upstream capped at 100 and returns "Temporary internal
+    // error" on roughly half its calls, so it is a fallback, not the primary.
+    // The alchemy public gateway caps at 100.
+    rpcs: rpcsFor(480, "https://worldchain-mainnet.gateway.tenderly.co", "https://worldchain.drpc.org", "https://worldchain-mainnet.g.alchemy.com/public"),
     hook: CANONICAL_HOOK, poolManager: "0xb1860D529182ac3BC1F51Fa2ABd56662b7D13f33",
     deployBlock: 33384712, explorer: "https://worldscan.org",
     universalRouter: "0x8ac7bee993bb44dab564ea4bc9ea67bf9eb5e743",
+    logRange: 50_000,
   },
   {
     chain: zora, slug: "zora", label: "Zora", testnet: false,
@@ -203,6 +237,7 @@ export const NETS: Net[] = [
     hook: CANONICAL_HOOK, poolManager: "0x0575338e4C17006aE181B47900A84404247CA30f",
     deployBlock: 49705618, explorer: "https://explorer.zora.energy",
     universalRouter: "0x3315ef7ca28db74abadc6c44570efdf06b04b020",
+    logRange: 50_000,
   },
   {
     chain: soneium, slug: "soneium", label: "Soneium", testnet: false,
@@ -210,6 +245,7 @@ export const NETS: Net[] = [
     hook: CANONICAL_HOOK, poolManager: "0x360E68faCcca8cA495c1B759Fd9EEe466db9FB32",
     deployBlock: 26485168, explorer: "https://soneium.blockscout.com",
     universalRouter: "0x4cded7edf52c8aa5259a54ec6a3ce7c6d2a455df",
+    logRange: 50_000,
   },
   {
     chain: megaeth, slug: "megaeth", label: "MegaETH", testnet: false,
@@ -217,6 +253,7 @@ export const NETS: Net[] = [
     hook: CANONICAL_HOOK, poolManager: "0xaCB7e78fa05D562e0A5D3089ec896D57D057d38E",
     deployBlock: 23308084, explorer: "https://megaeth.blockscout.com",
     universalRouter: "0x47837eb80db5908eabba9105626d9b348bea7b02",
+    logRange: 50_000,
   },
   {
     chain: robinhood, slug: "robinhood", label: "Robinhood", testnet: false,
@@ -224,6 +261,7 @@ export const NETS: Net[] = [
     hook: CANONICAL_HOOK, poolManager: "0x8366a39CC670B4001A1121B8F6A443A643e40951",
     deployBlock: 30206983, explorer: "https://robinscan.io",
     universalRouter: "0x8876789976decbfcbbbe364623c63652db8c0904",
+    logRange: 50_000,
   },
   {
     chain: tempo, slug: "tempo", label: "Tempo", testnet: false,
@@ -232,19 +270,21 @@ export const NETS: Net[] = [
     deployBlock: 33657201, explorer: "https://explore.tempo.xyz",
     universalRouter: "0xa2dc7d0266f0cc50b3eeaf36c9bfcecff1beea91",
     noNative: true,
+    logRange: 50_000,
   },
   {
     chain: avalanche, slug: "avalanche", label: "Avalanche", testnet: false,
-    // publicnode first (unlimited getLogs); the official api caps ranges at 2048
+    // publicnode 50k; the official api caps ranges at 2048
     rpcs: rpcsFor(43114, "https://avalanche-c-chain-rpc.publicnode.com", "https://api.avax.network/ext/bc/C/rpc", "https://avalanche.drpc.org"),
     hook: CANONICAL_HOOK, poolManager: "0x06380C0e0912312B5150364B9DC4542BA0DbBc85",
     deployBlock: 92242906,
     explorer: "https://snowscan.xyz",
     universalRouter: "0x94b75331ae8d42c1b61065089b7d48fe14aa73b7",
+    logRange: 50_000,
   },
   {
     chain: blast, slug: "blast", label: "Blast", testnet: false,
-    // publicnode first (unlimited getLogs); rpc.blast.io 413s on wide ranges
+    // publicnode 50k; rpc.blast.io + drpc 10k
     rpcs: rpcsFor(81457, "https://blast-rpc.publicnode.com", "https://rpc.blast.io", "https://blast.drpc.org"),
     // Ring Protocol's v4-core deployment — runtime bytecode is byte-identical to the canonical
     // PoolManager (only the embedded self-address immutable differs); verified on-chain.
@@ -252,50 +292,61 @@ export const NETS: Net[] = [
     deployBlock: 38647660,
     explorer: "https://blastscan.io",
     universalRouter: "0xeabbcb3e8e415306207ef514f660a3f820025be3",
+    logRange: 50_000,
   },
   {
     chain: celo, slug: "celo", label: "Celo", testnet: false,
-    // publicnode first (unlimited getLogs); forno caps ranges around 2k
+    // publicnode 50k; forno 5k; drpc 1k
     rpcs: rpcsFor(42220, "https://celo-rpc.publicnode.com", "https://forno.celo.org", "https://celo.drpc.org"),
     hook: CANONICAL_HOOK, poolManager: "0x288dc841A52FCA2707c6947B3A777c5E56cd87BC",
     deployBlock: 74204388,
     explorer: "https://celoscan.io",
     universalRouter: "0xcb695bc5d3aa22cad1e6df07801b061a05a0233a",
+    logRange: 50_000,
   },
   {
     chain: monad, slug: "monad", label: "Monad", testnet: false,
-    // every public Monad endpoint caps getLogs at ~1k blocks — the scanner
-    // learns that and fans out in parallel; three scan-capable endpoints
-    // spread the load. rpc.monad.xyz refuses getLogs entirely (413) — read
-    // fallback only
+    // the tightest chain in the set: drpc, tenderly and thirdweb all cap
+    // getLogs at exactly 1k blocks, rpc.monad.xyz at 100 (read fallback).
+    // logRange keeps the scanner from ever probing above the cap.
     rpcs: rpcsFor(143, "https://monad.drpc.org", "https://monad.gateway.tenderly.co", "https://143.rpc.thirdweb.com", "https://rpc.monad.xyz"),
     hook: CANONICAL_HOOK, poolManager: "0x188d586Ddcf52439676Ca21A244753fA19F9Ea8e",
     deployBlock: 93918120,
     explorer: "https://monadvision.com",
     universalRouter: "0x0d97dc33264bfc1c226207428a79b26757fb9dc3",
+    logRange: 1_000,
+    // drpc, tenderly and thirdweb all serve archive logs at exactly 1k, and
+    // Monad's history is ~120 windows — spreading across all three is what
+    // keeps the first load in seconds rather than half a minute
+    logEndpoints: 3,
   },
   {
     chain: xLayer, slug: "xlayer", label: "X Layer", testnet: false,
-    // drpc first (10k getLogs range); rpc.xlayer.tech refuses getLogs at any range
+    // drpc 10k; rpc.xlayer.tech caps at 100 — read fallback
     rpcs: rpcsFor(196, "https://xlayer.drpc.org", "https://rpc.xlayer.tech"),
     hook: CANONICAL_HOOK, poolManager: "0x360E68faCcca8cA495c1B759Fd9EEe466db9FB32",
     deployBlock: 67336132,
     explorer: "https://www.oklink.com/x-layer",
     universalRouter: "0xda00ae15d3a71466517129255255db7c0c0956d3",
+    logRange: 10_000,
   },
   {
     chain: sepolia, slug: "sepolia", label: "Sepolia", testnet: true,
-    rpcs: rpcsFor(11155111, "https://ethereum-sepolia-rpc.publicnode.com", "https://1rpc.io/sepolia"),
+    // 1rpc.io/sepolia is exhausted (200 "usage limit reached") — dropped
+    rpcs: rpcsFor(11155111, "https://ethereum-sepolia-rpc.publicnode.com"),
     hook: CANONICAL_HOOK, poolManager: "0xE03A1074c86CFeDd5C142C4F04F1a1536e203543",
     deployBlock: 11438219, explorer: "https://sepolia.etherscan.io",
     universalRouter: "0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b",
+    logRange: 50_000,
   },
   {
     chain: baseSepolia, slug: "base-sepolia", label: "Base Sepolia", testnet: true,
-    rpcs: rpcsFor(84532, "https://sepolia.base.org", "https://base-sepolia-rpc.publicnode.com", "https://base-sepolia.drpc.org"),
+    // publicnode 50k first; sepolia.base.org caps at 2k
+    rpcs: rpcsFor(84532, "https://base-sepolia-rpc.publicnode.com", "https://sepolia.base.org", "https://base-sepolia.drpc.org"),
     hook: CANONICAL_HOOK, poolManager: "0x05E73354cFDd6745C338b50BcFDfA3Aa6fA03408",
     deployBlock: 45168277, explorer: "https://sepolia.basescan.org",
     universalRouter: "0x492e6456d9528771018deb9e87ef7750ef184104",
+    logRange: 50_000,
   },
   {
     chain: unichainSepolia, slug: "unichain-sepolia", label: "Unichain Sepolia", testnet: true,
@@ -303,6 +354,7 @@ export const NETS: Net[] = [
     hook: CANONICAL_HOOK, poolManager: "0x00B036B58a818B1BC34d502D3fE730Db729e62AC",
     deployBlock: 59252497, explorer: "https://sepolia.uniscan.xyz",
     universalRouter: "0xf70536b3bcc1bd1a972dc186a2cf84cc6da6be5d",
+    logRange: 50_000,
   },
   {
     chain: arbitrumSepolia, slug: "arbitrum-sepolia", label: "Arbitrum Sepolia", testnet: true,
@@ -310,12 +362,14 @@ export const NETS: Net[] = [
     hook: CANONICAL_HOOK, poolManager: "0xFB3e0C6F74eB1a21CC1Da29aeC80D2Dfe6C9a317",
     deployBlock: 295676509, explorer: "https://sepolia.arbiscan.io",
     universalRouter: "0xefd1d4bd4cf1e86da286bb4cb1b8bced9c10ba47",
+    logRange: 50_000,
   },
   {
     chain: robinhoodTestnet, slug: "robinhood-testnet", label: "Robinhood Testnet", testnet: true,
     rpcs: rpcsFor(46630, "https://rpc.testnet.chain.robinhood.com"),
     hook: CANONICAL_HOOK, poolManager: "0x8366a39CC670B4001A1121B8F6A443A643e40951",
     deployBlock: 97982800, explorer: "https://explorer.testnet.chain.robinhood.com",
+    logRange: 50_000,
   },
 ];
 

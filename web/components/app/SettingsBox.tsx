@@ -41,7 +41,13 @@ import { SwapPanel } from "./SwapBox";
 
 type Section = "swap" | "add" | "manage" | "donate" | "info";
 
-const ALL_SECTIONS: Section[] = ["swap", "add", "manage", "donate", "info"];
+/**
+ * Desktop tab order. `info` leads — and therefore opens by default — because
+ * landing on a pool should first tell you what the pool IS, not put a trade
+ * form in front of you. Mobile passes its own subsets (the page hosts an
+ * `info` tab of its own), so this order only governs the desktop box.
+ */
+const ALL_SECTIONS: Section[] = ["info", "swap", "add", "manage", "donate"];
 
 export function SettingsBox({
   net,
@@ -86,6 +92,13 @@ export function SettingsBox({
   useEffect(() => {
     if (tabs.length > 0 && !tabs.includes(section)) setSection(tabs[0]);
   }, [tabs, section]);
+
+  // the box outlives a pool switch, so reset it: a new pool always opens on
+  // its leading tab rather than inheriting the previous pool's open form
+  useEffect(() => {
+    setSection(sections[0] ?? "swap");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pool.poolId]);
 
   if (!key) {
     return (

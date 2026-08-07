@@ -7,58 +7,72 @@ import { ftoken, short } from "@/lib/format";
 import { isNative, type Pot, type Program } from "@/lib/hook";
 import { useTokenMeta } from "@/lib/usePool";
 
-/* Read-only "how is this pool configured" panel. Desktop: the `info` tab of
- * the settings box. Mobile: its own card in the Info tab. Same body both ways. */
+/* Read-only "how is this pool configured" panel — compact and visual.
+ * Desktop: the `info` tab of the settings box. Mobile: its own card in the
+ * Info tab. Same body both ways. */
 
 const C_COMPOUND = "#17b512"; // green — back into the position
 const C_BUYBACK = "#00987f"; // teal — into the pot
 const C_BURN = "#e23a3a"; // red — out of supply
-const C_REST = "#8b93a8"; // gray — delivered to the recipient
+const C_REST = "#98a0b3"; // gray — delivered to the recipient
 
 function pct(wad: bigint): number {
-  // WAD → percent with 2 decimals of precision
   return Number(wad / 10n ** 14n) / 100;
 }
 
 function fpct(p: number): string {
-  return `${p % 1 === 0 ? p.toFixed(0) : p.toFixed(2)}%`;
+  return `${p % 1 === 0 ? p.toFixed(0) : p.toFixed(1)}%`;
 }
 
-function SplitBar({
-  title,
-  parts,
-}: {
-  title: string;
-  parts: { label: string; pctV: number; color: string; note?: string }[];
-}) {
-  const shown = parts.filter((p) => p.pctV > 0);
+/* ------------------------------------------------------------- donut --- */
+
+type Slice = { label: string; v: number; color: string };
+
+function Donut({ title, slices }: { title: string; slices: Slice[] }) {
+  const R = 30;
+  const C = 2 * Math.PI * R;
+  const live = slices.filter((s) => s.v > 0);
+  const top = live.length > 0 ? live.reduce((a, b) => (b.v > a.v ? b : a)) : null;
+  let acc = 0;
   return (
-    <div>
-      <div className="label mb-2">{title}</div>
-      <div className="flex h-3 w-full overflow-hidden rounded-full border border-[var(--line)] bg-panel2">
-        {shown.length === 0 ? (
-          <div className="h-full w-full" style={{ background: "repeating-linear-gradient(45deg,transparent,transparent 6px,rgba(139,147,168,.15) 6px,rgba(139,147,168,.15) 12px)" }} />
-        ) : (
-          shown.map((p) => (
-            <div
-              key={p.label}
-              className="h-full"
-              style={{ width: `${p.pctV}%`, background: p.color }}
+    <div className="flex flex-col items-center gap-2 rounded-xl border border-[var(--line)] bg-panel2 px-2 py-3">
+      <svg width="86" height="86" viewBox="0 0 86 86" className="-rotate-90">
+        {/* empty track */}
+        <circle cx="43" cy="43" r={R} fill="none" stroke="rgba(28,36,71,.08)" strokeWidth="11" />
+        {live.map((s) => {
+          const from = (acc / 100) * C;
+          acc += s.v;
+          return (
+            <circle
+              key={s.label}
+              cx="43"
+              cy="43"
+              r={R}
+              fill="none"
+              stroke={s.color}
+              strokeWidth="11"
+              strokeDasharray={`${(s.v / 100) * C} ${C}`}
+              strokeDashoffset={-from}
+              style={{ transition: "stroke-dasharray .6s ease, stroke-dashoffset .6s ease" }}
             />
-          ))
-        )}
-      </div>
-      <div className="mt-2 space-y-1">
-        {parts.map((p) => (
-          <div key={p.label} className="mono flex items-center justify-between gap-3 text-[11px]">
-            <span className="flex min-w-0 items-center gap-2 text-dim">
-              <i className="h-2 w-2 flex-shrink-0 rounded-full" style={{ background: p.color }} />
-              <span className="truncate">
-                {p.label}
-                {p.note && <span className="text-dim2"> · {p.note}</span>}
-              </span>
+          );
+        })}
+        {/* center readout (un-rotate) */}
+        <g transform="rotate(90 43 43)">
+          <text x="43" y="47" textAnchor="middle" fontSize="14" fontWeight="800" fontFamily="var(--font-mono)" fill={top?.color ?? "#98a0b3"}>
+            {top ? fpct(top.v) : "—"}
+          </text>
+        </g>
+      </svg>
+      <div className="label text-center leading-tight">{title}</div>
+      <div className="w-full space-y-0.5">
+        {slices.map((s) => (
+          <div key={s.label} className="mono flex items-center justify-between gap-1 text-[9.5px]">
+            <span className="flex min-w-0 items-center gap-1 text-dim2">
+              <i className="h-1.5 w-1.5 flex-shrink-0 rounded-full" style={{ background: s.color, opacity: s.v > 0 ? 1 : 0.3 }} />
+              <span className="truncate">{s.label}</span>
             </span>
-            <span className="flex-shrink-0 font-bold text-txt">{fpct(p.pctV)}</span>
+            <span className={`flex-shrink-0 font-bold ${s.v > 0 ? "text-txt" : "text-dim2"}`}>{fpct(s.v)}</span>
           </div>
         ))}
       </div>
@@ -66,37 +80,39 @@ function SplitBar({
   );
 }
 
-function RoleRow({
+/* --------------------------------------------------------- role chips --- */
+
+function RoleChip({
   label,
-  addr,
-  me,
-  surrenderedText,
-  surrenderedTone,
+  value,
+  tone = "plain",
+  you,
 }: {
   label: string;
-  addr?: string;
-  me?: string;
-  surrenderedText: string;
-  surrenderedTone: "bad" | "warn";
+  value: string;
+  tone?: "plain" | "bad" | "warn" | "green";
+  you?: boolean;
 }) {
-  if (!addr) return null;
-  const surrendered = addr === zeroAddress;
+  const toneCls =
+    tone === "bad"
+      ? "border-bad/40 bg-bad/5 text-bad"
+      : tone === "warn"
+        ? "border-warn/40 bg-warn/5 text-warn"
+        : tone === "green"
+          ? "border-green/40 bg-green/5 text-green"
+          : "border-[var(--line)] bg-panel2 text-txt";
   return (
-    <div className="row">
-      <span className="text-dim">{label}</span>
-      <span className="v">
-        {surrendered ? (
-          <span className={surrenderedTone === "bad" ? "text-bad" : "text-warn"}>{surrenderedText}</span>
-        ) : (
-          <>
-            {short(addr)}
-            {me && addr.toLowerCase() === me.toLowerCase() && <span className="text-green"> (you)</span>}
-          </>
-        )}
-      </span>
+    <div className={`rounded-xl border px-3 py-2 ${toneCls}`}>
+      <div className="label mb-0.5 !text-dim2">{label}</div>
+      <div className="mono truncate text-[11.5px] font-bold">
+        {value}
+        {you && <span className="text-green"> ✓ you</span>}
+      </div>
     </div>
   );
 }
+
+/* --------------------------------------------------------------- body --- */
 
 export function ProgramInfo({
   net,
@@ -116,124 +132,113 @@ export function ProgramInfo({
   const secDec = sec.data?.decimals ?? 18;
 
   const exists = program?.exists ?? false;
+  const isYou = (a?: string) => !!me && !!a && a.toLowerCase() === me.toLowerCase();
+  const potBurns = !!pot && pot.recipient === zeroAddress;
 
-  // pot output split (pump + shield) — lives on the program; without one the
-  // whole output flows to the pot recipient (or the burn cascade on 0x0)
+  const compound = exists ? pct(program!.compoundShareWad) : 0;
+  const buyback = exists ? pct(program!.buybackShareWad) : 0;
+  const burn = exists ? pct(program!.burnShareWad) : 0;
   const potCompound = exists ? pct(program!.potCompoundShareWad) : 0;
   const potBurn = exists ? pct(program!.potBurnShareWad) : 0;
   const potRest = Math.max(0, 100 - potCompound - potBurn);
-  const potRecipientIsBurn = !!pot && pot.recipient === zeroAddress;
-  const potRestLabel = potRecipientIsBurn
-    ? "burn cascade (recipient = 0x0)"
-    : `recipient ${pot ? short(pot.recipient) : "…"}`;
 
   return (
-    <div className="space-y-6">
-      {/* roles */}
-      <div className="space-y-1">
-        <RoleRow label="owner" addr={program?.exists ? program.owner : undefined} me={me} surrenderedText="surrendered — LP locked forever" surrenderedTone="bad" />
-        <RoleRow label="operator" addr={program?.exists ? program.operator : undefined} me={me} surrenderedText="surrendered — config frozen" surrenderedTone="warn" />
-        <RoleRow label="pot admin" addr={pot?.admin} me={me} surrenderedText="surrendered" surrenderedTone="warn" />
-        {pot && (
-          <div className="row">
-            <span className="text-dim">pot recipient</span>
-            <span className="v">
-              {potRecipientIsBurn ? <span className="text-bad">BURN (cascade)</span> : short(pot.recipient)}
-            </span>
-          </div>
-        )}
+    <div className="space-y-4">
+      {/* who runs what — compact chips */}
+      <div className="grid grid-cols-2 gap-2">
+        <RoleChip
+          label="owner"
+          value={!exists ? "—" : program!.owner === zeroAddress ? "locked forever" : short(program!.owner)}
+          tone={exists && program!.owner === zeroAddress ? "bad" : "plain"}
+          you={exists && isYou(program!.owner)}
+        />
+        <RoleChip
+          label="operator"
+          value={!exists ? "—" : program!.operator === zeroAddress ? "config frozen" : short(program!.operator)}
+          tone={exists && program!.operator === zeroAddress ? "warn" : "plain"}
+          you={exists && isYou(program!.operator)}
+        />
+        <RoleChip
+          label="pot admin"
+          value={pot ? short(pot.admin) : "—"}
+          you={isYou(pot?.admin)}
+        />
+        <RoleChip
+          label="buyback goes to"
+          value={potBurns ? "🔥 BURN" : pot ? short(pot.recipient) : "—"}
+          tone={potBurns ? "bad" : "plain"}
+          you={!potBurns && isYou(pot?.recipient)}
+        />
       </div>
 
       {!exists ? (
-        <p className="mono text-[11.5px] leading-relaxed text-dim2">
-          no LP program on this pool yet — the pot (donations, pump, shield)
-          works regardless, and its whole output goes to{" "}
-          {potRecipientIsBurn ? "the burn cascade" : `the recipient ${pot ? short(pot.recipient) : "…"}`}.
-          once a program exists, its settings appear here.
+        <p className="mono rounded-xl border border-[var(--line)] bg-panel2 px-3 py-2.5 text-[11px] leading-relaxed text-dim2">
+          no LP program yet — the pot (donate, pump, shield) works anyway, and
+          its whole output goes {potBurns ? "to the burn cascade 🔥" : `to ${pot ? short(pot.recipient) : "…"}`}.
         </p>
       ) : (
         <>
-          {/* the three splits, one bar each */}
-          <SplitBar
-            title={`LP fees — ${secSym} side`}
-            parts={[
-              { label: "compound → position", pctV: pct(program!.compoundShareWad), color: C_COMPOUND },
-              { label: "buyback → pot", pctV: pct(program!.buybackShareWad), color: C_BUYBACK },
-              {
-                label:
-                  program!.secondaryRecipient === zeroAddress
-                    ? "rest — no recipient"
-                    : `rest → ${short(program!.secondaryRecipient)}`,
-                pctV: Math.max(0, 100 - pct(program!.compoundShareWad) - pct(program!.buybackShareWad)),
-                color: C_REST,
-              },
-            ]}
-          />
-          <SplitBar
-            title={`LP fees — ${mainSym} side`}
-            parts={[
-              { label: "compound → position", pctV: pct(program!.compoundShareWad), color: C_COMPOUND },
-              { label: "burn → cascade", pctV: pct(program!.burnShareWad), color: C_BURN },
-              {
-                label:
-                  program!.mainRecipient === zeroAddress
-                    ? "rest — no recipient"
-                    : `rest → ${short(program!.mainRecipient)}`,
-                pctV: Math.max(0, 100 - pct(program!.compoundShareWad) - pct(program!.burnShareWad)),
-                color: C_REST,
-              },
-            ]}
-          />
-          <SplitBar
-            title={`buyback output (pump + shield, in ${mainSym})`}
-            parts={[
-              { label: "compound → position carry", pctV: potCompound, color: C_COMPOUND },
-              { label: "burn → cascade", pctV: potBurn, color: C_BURN },
-              { label: potRestLabel, pctV: potRest, color: potRecipientIsBurn ? C_BURN : C_REST },
-            ]}
-          />
+          {/* the three splits — donuts, like the sim page */}
+          <div className="grid grid-cols-3 gap-2">
+            <Donut
+              title={`${secSym} fees`}
+              slices={[
+                { label: "compound", v: compound, color: C_COMPOUND },
+                { label: "buyback", v: buyback, color: C_BUYBACK },
+                {
+                  label: program!.secondaryRecipient === zeroAddress ? "recipient" : short(program!.secondaryRecipient),
+                  v: Math.max(0, 100 - compound - buyback),
+                  color: C_REST,
+                },
+              ]}
+            />
+            <Donut
+              title={`${mainSym} fees`}
+              slices={[
+                { label: "compound", v: compound, color: C_COMPOUND },
+                { label: "burn", v: burn, color: C_BURN },
+                {
+                  label: program!.mainRecipient === zeroAddress ? "recipient" : short(program!.mainRecipient),
+                  v: Math.max(0, 100 - compound - burn),
+                  color: C_REST,
+                },
+              ]}
+            />
+            <Donut
+              title="buyback out"
+              slices={[
+                { label: "compound", v: potCompound, color: C_COMPOUND },
+                { label: "burn", v: potBurn, color: C_BURN },
+                {
+                  label: potBurns ? "burn 🔥" : pot ? short(pot.recipient) : "recipient",
+                  v: potRest,
+                  color: potBurns ? C_BURN : C_REST,
+                },
+              ]}
+            />
+          </div>
 
-          {/* auto-harvest */}
-          <div className="space-y-1">
-            <div className="label mb-1.5">auto-harvest</div>
-            <div className="row">
-              <span className="text-dim">min {mainSym}</span>
-              <span className="v">
-                {program!.minMain === maxUint256 ? (
-                  <span className="text-warn">disarmed</span>
-                ) : (
-                  `${ftoken(program!.minMain, mainDec)} ${mainSym}`
-                )}
-              </span>
-            </div>
-            <div className="row">
-              <span className="text-dim">min {secSym}</span>
-              <span className="v">
-                {program!.minSecondary === maxUint256 ? (
-                  <span className="text-warn">disarmed</span>
-                ) : (
-                  `${ftoken(program!.minSecondary, secDec)} ${secSym}`
-                )}
-              </span>
-            </div>
-            <div className="row">
-              <span className="text-dim">manual harvest</span>
-              <span className="v">
-                {program!.publicHarvest || program!.owner === zeroAddress ? (
-                  <span className="text-green">public — anyone</span>
-                ) : (
-                  "owner only"
-                )}
-              </span>
-            </div>
+          {/* auto-harvest — one pill row */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="pill">
+              min {mainSym}:{" "}
+              {program!.minMain === maxUint256 ? "off" : ftoken(program!.minMain, mainDec)}
+            </span>
+            <span className="pill">
+              min {secSym}:{" "}
+              {program!.minSecondary === maxUint256 ? "off" : ftoken(program!.minSecondary, secDec)}
+            </span>
+            <span className={`pill ${program!.publicHarvest || program!.owner === zeroAddress ? "hi" : ""}`}>
+              harvest: {program!.publicHarvest || program!.owner === zeroAddress ? "public" : "owner"}
+            </span>
           </div>
         </>
       )}
 
-      <p className="mono text-[10.5px] leading-relaxed text-dim2">
+      <p className="mono text-[10px] leading-relaxed text-dim2">
         {pot && isNative(pot.main)
-          ? `${mainSym} is native — burn shares are not allowed on this pool by design.`
-          : "every number above is read live from the hook — nothing is cached or off-chain."}
+          ? `${mainSym} is native — burn shares are impossible on this pool by design.`
+          : "read live from the hook — nothing cached, nothing off-chain."}
       </p>
     </div>
   );
@@ -247,10 +252,11 @@ export function ProgramInfoCard(props: {
 }) {
   return (
     <div className="panel">
-      <div className="border-b border-[var(--line)] px-5 py-3">
-        <span className="label">pool settings</span>
+      <div className="chead">
+        <span>pool settings</span>
+        <span className="pill hi">live</span>
       </div>
-      <div className="p-5">
+      <div className="p-4">
         <ProgramInfo {...props} />
       </div>
     </div>

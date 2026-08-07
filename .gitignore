@@ -3,7 +3,9 @@ cache/
 node_modules/
 broadcast/
 .env
+.env.*
 .deployer.key
 .deployer.*.key
 *.local.md
 package-lock.json
+.DS_Store

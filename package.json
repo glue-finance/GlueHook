@@ -1,0 +1,13 @@
+{
+  "name": "gluehook-scripts",
+  "private": true,
+  "type": "module",
+  "description": "Deployment tooling for the GlueHook contract (salt / deployer mining + two-transaction multichain deploy: GlueLiquidity at nonce 0, the linked hook at nonce 1).",
+  "scripts": {
+    "mine-deployer": "node scripts/mine-deployer.mjs",
+    "deploy": "node scripts/deploy-nonce0.mjs"
+  },
+  "dependencies": {
+    "ethers": "^6.13.0"
+  }
+}

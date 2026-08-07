@@ -1,0 +1,37 @@
+# Mirrors the compiler profile the hook was audited under inside the Glue V2 campaign:
+# solc 0.8.35, prague, viaIR, optimizer runs = 1, revert strings stripped.
+
+[profile.default]
+src = "contracts"
+out = "out"
+libs = ["lib"]
+solc = "0.8.35"
+evm_version = "prague"
+via_ir = true
+optimizer = true
+optimizer_runs = 1
+revert_strings = "strip"
+bytecode_hash = "none"
+
+# GlueLiquidity is DELEGATECALL-linked. The artifact is statically linked against this SENTINEL
+# address so the test fixture can `vm.etch` the library runtime there; the production deploy
+# script (scripts/deploy-nonce0.mjs) replaces the sentinel with the real library address — the
+# vanity deployer's nonce-0 CREATE — before deploying the hook at nonce 1.
+libraries = [
+    "contracts/libs/GlueLiquidity.sol:GlueLiquidity:0xb0b0000000000000000000000000000000000b0b",
+]
+
+test = "test"
+fs_permissions = [{ access = "read", path = "./test/fixtures" }]
+
+[profile.default.invariant]
+runs = 384
+depth = 64
+fail_on_revert = false
+call_override = false
+
+[profile.default.fuzz]
+runs = 512
+
+[lint]
+lint_on_build = false

@@ -12,7 +12,6 @@ import {
 } from "viem";
 import { useAccount } from "wagmi";
 import type { Net } from "@/lib/chains";
-import { clientForNet } from "@/lib/client";
 import { ftoken, short } from "@/lib/format";
 import {
   fullRangeTicks,
@@ -26,7 +25,7 @@ import { useGasReserve } from "@/lib/gas";
 import type { RegisteredPool } from "@/lib/registry";
 import { usePairUsd } from "@/lib/usd";
 import { useTokenMeta, type TokenMeta } from "@/lib/usePool";
-import { positionAmounts, useBalanceOf, usePoolState } from "@/lib/usePoolState";
+import { positionAmounts, useAllowance, useBalanceOf, usePoolState } from "@/lib/usePoolState";
 import { getSqrtRatioAtTick, liquidityForAmounts } from "@/lib/v4math";
 import {
   ConfigEditor,
@@ -103,7 +102,8 @@ export function SettingsBox({
   return (
     <div className="panel">
       <div className="border-b border-[var(--line)] p-2">
-        <div className="tabbar w-full !p-[3px]">
+        {/* an owner sees all five tabs — compact them on desktop so "info" never clips */}
+        <div className={`tabbar w-full !p-[3px] ${tabs.length >= 5 ? "compact" : ""}`}>
           {tabs.map((s) => (
             <button
               key={s}
@@ -155,6 +155,7 @@ function AddLiquidity({
   const [owner, setOwner] = useState("");
   const [draft, setDraft] = useState<ConfigDraft>({ ...EMPTY_DRAFT });
   const [amounts, setAmounts] = useState<PairValue>({ a0: "", a1: "" });
+  const [phase, setPhase] = useState<string | null>(null);
   const { tx, send } = useHookTx(net);
 
   const poolId = useMemo(() => poolIdOf(poolKey), [poolKey]);
@@ -201,7 +202,43 @@ function AddLiquidity({
     return L > 1_000_000n ? L - L / 1_000_000n : L;
   }, [state.data, amounts, dec0, dec1, programExists, program, poolKey.tickSpacing]);
 
+  // Live allowance reads gate the ONE action button, Uniswap-style: while an
+  // approval is missing the button IS that approval — one transaction per
+  // press, and the label advances once the receipt is verified.
+  const amt0 = parseAmt(amounts.a0, dec0);
+  const amt1 = parseAmt(amounts.a1, dec1);
+  const allow0 = useAllowance(net, poolKey.currency0, me, net.hook);
+  const allow1 = useAllowance(net, poolKey.currency1, me, net.hook);
+  const needApprove0 =
+    !isNative(poolKey.currency0) && amt0 > 0n && allow0.data !== undefined && allow0.data < amt0;
+  const needApprove1 =
+    !isNative(poolKey.currency1) && amt1 > 0n && allow1.data !== undefined && allow1.data < amt1;
+  const allowancesLoading =
+    (!isNative(poolKey.currency0) && amt0 > 0n && allow0.data === undefined) ||
+    (!isNative(poolKey.currency1) && amt1 > 0n && allow1.data === undefined);
+
+  /** one press = one approval — the next press does the next step */
+  async function approveNext() {
+    const token = needApprove0 ? poolKey.currency0 : poolKey.currency1;
+    const sym = needApprove0
+      ? meta0.data?.symbol ?? short(poolKey.currency0)
+      : meta1.data?.symbol ?? short(poolKey.currency1);
+    setPhase(`approving ${sym}…`);
+    try {
+      await send({
+        address: token,
+        abi: erc20Abi,
+        functionName: "approve",
+        args: [net.hook, maxUint256],
+      });
+      await Promise.all([allow0.refetch(), allow1.refetch()]);
+    } finally {
+      setPhase(null);
+    }
+  }
+
   async function submit() {
+    if (needApprove0 || needApprove1) return; // the button is the approval until then
     const value = hasNative ? parseAmt(amounts.a0, 18) : 0n;
     if (programExists) {
       await send({ functionName: "addProgramLiquidity", args: [poolKey, liq], value });
@@ -272,11 +309,6 @@ function AddLiquidity({
         </p>
       )}
 
-      {!isNative(poolKey.currency0) && (
-        <ApproveGate net={net} token={poolKey.currency0} me={me} />
-      )}
-      <ApproveGate net={net} token={poolKey.currency1} me={me} />
-
       {!programExists && (
         <div>
           <div className="label mb-1.5">owner (empty = you)</div>
@@ -301,54 +333,36 @@ function AddLiquidity({
 
       <button
         className="btn-launch"
-        disabled={liq === 0n || !!cfgErr || tx.s === "wallet" || tx.s === "pending"}
-        onClick={submit}
+        disabled={
+          liq === 0n ||
+          !!cfgErr ||
+          allowancesLoading ||
+          tx.s === "wallet" ||
+          tx.s === "pending" ||
+          phase !== null
+        }
+        onClick={needApprove0 || needApprove1 ? approveNext : submit}
       >
-        {programExists ? "Add to program" : advanced ? "Add liquidity (advanced)" : "Add liquidity"}
+        {phase ??
+          (allowancesLoading
+            ? "checking approvals…"
+            : needApprove0
+              ? `Approve ${meta0.data?.symbol ?? short(poolKey.currency0)}`
+              : needApprove1
+                ? `Approve ${meta1.data?.symbol ?? short(poolKey.currency1)}`
+                : programExists
+                  ? "Add to program"
+                  : advanced
+                    ? "Add liquidity (advanced)"
+                    : "Add liquidity")}
       </button>
+      {(needApprove0 || needApprove1) && phase === null && (
+        <p className="mono -mt-2 text-center text-[10.5px] text-dim2">
+          one press per step — approve, then add.
+        </p>
+      )}
       <TxStatus tx={tx} net={net} />
     </div>
-  );
-}
-
-/* ------------------------------------------------------- ERC20 approve gate */
-
-export function ApproveGate({ net, token, me }: { net: Net; token: Address; me?: Address }) {
-  const [allowance, setAllowance] = useState<bigint | null>(null);
-  const meta = useTokenMeta(net, token);
-  const { tx, send } = useHookTx(net);
-
-  useEffect(() => {
-    if (!me || isNative(token)) return;
-    let dead = false;
-    clientForNet(net)
-      .readContract({ address: token, abi: erc20Abi, functionName: "allowance", args: [me, net.hook] })
-      .then((a) => !dead && setAllowance(a as bigint))
-      .catch(() => !dead && setAllowance(null));
-    return () => {
-      dead = true;
-    };
-  }, [net, token, me, tx.s]);
-
-  if (isNative(token) || !me || allowance === null || allowance > 10n ** 30n) return null;
-
-  return (
-    <button
-      className="btn-approve"
-      disabled={tx.s === "wallet" || tx.s === "pending"}
-      onClick={() =>
-        send({
-          address: token,
-          abi: erc20Abi,
-          functionName: "approve",
-          args: [net.hook, maxUint256],
-        })
-      }
-    >
-      {tx.s === "wallet" || tx.s === "pending"
-        ? `approving ${meta.data?.symbol ?? short(token)}…`
-        : `Approve ${meta.data?.symbol ?? short(token)}`}
-    </button>
   );
 }
 
@@ -621,6 +635,7 @@ function Donate({
   me?: Address;
 }) {
   const [amount, setAmount] = useState("");
+  const [phase, setPhase] = useState<string | null>(null);
   const { tx, send } = useHookTx(net);
   const secIsNative = pot ? isNative(pot.secondary) : false;
   const dec = sec?.decimals ?? 18;
@@ -642,17 +657,44 @@ function Donate({
   const secIs0 = pot ? pot.secondary.toLowerCase() === poolKey.currency0.toLowerCase() : false;
   const secUsd = secIs0 ? pairUsd.u0 : pairUsd.u1;
 
-  async function submit() {
-    let amt: bigint;
+  // Live allowance read gates the ONE button, Uniswap-style: while the
+  // approval is missing the button IS the approval — one transaction per
+  // press, label advancing on the verified receipt.
+  const allowSec = useAllowance(net, pot?.secondary, me, net.hook);
+  const amtParsed = (() => {
     try {
-      amt = parseUnits(amount || "0", dec);
+      return parseUnits(amount || "0", dec);
     } catch {
-      return;
+      return 0n;
     }
+  })();
+  const needApprove =
+    !secIsNative && amtParsed > 0n && allowSec.data !== undefined && allowSec.data < amtParsed;
+  const allowanceLoading = !secIsNative && amtParsed > 0n && allowSec.data === undefined;
+
+  /** one press = the approval — the next press donates */
+  async function approveSec() {
+    if (!pot) return;
+    setPhase(`approving ${sec?.symbol ?? short(pot.secondary)}…`);
+    try {
+      await send({
+        address: pot.secondary,
+        abi: erc20Abi,
+        functionName: "approve",
+        args: [net.hook, maxUint256],
+      });
+      await allowSec.refetch();
+    } finally {
+      setPhase(null);
+    }
+  }
+
+  async function submit() {
+    if (!pot || amtParsed <= 0n || needApprove) return;
     await send({
       functionName: "donate",
-      args: [poolKey, amt],
-      value: secIsNative ? amt : 0n,
+      args: [poolKey, amtParsed],
+      value: secIsNative ? amtParsed : 0n,
     });
   }
 
@@ -673,14 +715,29 @@ function Donate({
         gasReserve={gasReserve.data}
         unitUsd={secUsd}
       />
-      {!secIsNative && pot && <ApproveGate net={net} token={pot.secondary} me={me} />}
       <button
         className="btn-launch"
-        disabled={!amount || tx.s === "wallet" || tx.s === "pending"}
-        onClick={submit}
+        disabled={
+          amtParsed <= 0n ||
+          allowanceLoading ||
+          tx.s === "wallet" ||
+          tx.s === "pending" ||
+          phase !== null
+        }
+        onClick={needApprove ? approveSec : submit}
       >
-        Donate to the pot
+        {phase ??
+          (allowanceLoading
+            ? "checking approval…"
+            : needApprove
+              ? `Approve ${sec?.symbol ?? (pot ? short(pot.secondary) : "…")}`
+              : "Donate to the pot")}
       </button>
+      {needApprove && phase === null && (
+        <p className="mono -mt-2 text-center text-[10.5px] text-dim2">
+          one press per step — approve, then donate.
+        </p>
+      )}
       <TxStatus tx={tx} net={net} />
     </div>
   );

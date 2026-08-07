@@ -529,6 +529,19 @@ input[type="range"]::-moz-range-thumb {
   background: var(--t-txt);
   color: #fff;
 }
+/* 5+ tabs (pool owner: swap·add·manage·donate·info) — shrink on DESKTOP only
+   so the last tab never clips; mobile keeps the normal size (it splits the
+   sections across its own tabs anyway) */
+@media (min-width: 1024px) {
+  .tabbar.compact {
+    gap: 2px;
+  }
+  .tabbar.compact button {
+    font-size: 10.5px;
+    letter-spacing: 0.05em;
+    padding: 7px 10px;
+  }
+}
 
 /* code blocks stay dark — a deliberate high-contrast card */
 .codeblock {

@@ -5,6 +5,7 @@ import type { Abi } from "viem";
 import { useAccount, useSwitchChain, useWriteContract } from "wagmi";
 import { waitForTransactionReceipt } from "wagmi/actions";
 import type { Net } from "@/lib/chains";
+import { clientForNet } from "@/lib/client";
 import { glueHookAbi } from "@/lib/hook";
 import { wagmiConfig } from "@/lib/wagmi";
 
@@ -15,7 +16,28 @@ export type TxState =
   | { s: "ok"; hash: `0x${string}` }
   | { s: "err"; msg: string };
 
-/** One-stop hook write: switches chain if needed, sends, waits, reports. */
+/**
+ * After a receipt lands, make sure the app's own public client has caught up
+ * to the receipt's block. The wallet's node and our fallback RPCs are
+ * different machines — reading allowance/balance the instant the wallet
+ * confirms routinely returns PRE-transaction state, which is how an approval
+ * "confirms" yet the UI still demands it. Bounded: never blocks past ~8s.
+ */
+async function syncReadClient(net: Net, blockNumber: bigint) {
+  const client = clientForNet(net);
+  for (let i = 0; i < 16; i++) {
+    try {
+      // cacheTime 0 — the default getBlockNumber cache would defeat the poll
+      const b = await client.getBlockNumber({ cacheTime: 0 });
+      if (b >= blockNumber) return;
+    } catch {
+      /* transient RPC failure — keep polling */
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+}
+
+/** One-stop hook write: switches chain if needed, sends, waits, verifies, reports. */
 export function useHookTx(net: Net) {
   const { chainId, isConnected } = useAccount();
   const { switchChainAsync } = useSwitchChain();
@@ -46,7 +68,16 @@ export function useHookTx(net: Net) {
           chainId: net.chain.id,
         });
         setTx({ s: "pending", hash });
-        await waitForTransactionReceipt(wagmiConfig, { hash, chainId: net.chain.id });
+        const receipt = await waitForTransactionReceipt(wagmiConfig, {
+          hash,
+          chainId: net.chain.id,
+        });
+        if (receipt.status !== "success") {
+          setTx({ s: "err", msg: "transaction reverted on-chain" });
+          return null;
+        }
+        // hold "pending" until our read RPCs can actually SEE the new state
+        await syncReadClient(net, receipt.blockNumber);
         setTx({ s: "ok", hash });
         return hash;
       } catch (e) {

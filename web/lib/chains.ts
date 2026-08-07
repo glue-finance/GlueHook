@@ -112,6 +112,12 @@ export type Net = {
   explorer: string;
   /** Uniswap Universal Router (V4_SWAP entry) — absent = no swap UI on this net */
   universalRouter?: `0x${string}`;
+  /**
+   * The chain has NO spendable native coin (Tempo: fees are paid in USD
+   * stablecoins, "TEMPO" is not a real asset) — never offer the native side
+   * in token pickers and never pre-select it.
+   */
+  noNative?: boolean;
 };
 
 /** canonical Permit2 — same address on every chain */
@@ -128,7 +134,9 @@ function rpcsFor(chainId: number, ...urls: string[]): string[] {
 export const NETS: Net[] = [
   {
     chain: mainnet, slug: "ethereum", label: "Ethereum", testnet: false,
-    rpcs: rpcsFor(1, "https://ethereum-rpc.publicnode.com", "https://eth.drpc.org", "https://1rpc.io/eth"),
+    // tenderly + mevblocker serve eth_getLogs (45k / 10k ranges); publicnode
+    // and drpc refuse getLogs on mainnet entirely — kept as read fallbacks only
+    rpcs: rpcsFor(1, "https://gateway.tenderly.co/public/mainnet", "https://rpc.mevblocker.io", "https://ethereum-rpc.publicnode.com", "https://eth.drpc.org"),
     hook: CANONICAL_HOOK, poolManager: "0x000000000004444c5dc75cB358380D2e3dE08A90",
     deployBlock: 25703029, explorer: "https://etherscan.io",
     universalRouter: "0x66a9893cc07d91d95644aedd05d03f95e1dba8af",
@@ -159,28 +167,32 @@ export const NETS: Net[] = [
   },
   {
     chain: optimism, slug: "optimism", label: "Optimism", testnet: false,
-    rpcs: rpcsFor(10, "https://mainnet.optimism.io", "https://optimism-rpc.publicnode.com", "https://optimism.drpc.org"),
+    // publicnode first: mainnet.optimism.io rate-limits (429) under scan load
+    rpcs: rpcsFor(10, "https://optimism-rpc.publicnode.com", "https://mainnet.optimism.io", "https://optimism.drpc.org"),
     hook: CANONICAL_HOOK, poolManager: "0x9a13F98Cb987694C9F086b1F5eB990EeA8264Ec3",
     deployBlock: 155253116, explorer: "https://optimistic.etherscan.io",
     universalRouter: "0x851116d9223fabed8e56c0e6b8ad0c31d98b3507",
   },
   {
     chain: bsc, slug: "bnb", label: "BNB Chain", testnet: false,
-    rpcs: rpcsFor(56, "https://bsc-dataseed.bnbchain.org", "https://bsc-rpc.publicnode.com", "https://bsc.drpc.org"),
+    // publicnode first: bsc-dataseed answers getLogs with "limit exceeded" at ANY range
+    rpcs: rpcsFor(56, "https://bsc-rpc.publicnode.com", "https://bsc-dataseed.bnbchain.org", "https://bsc.drpc.org"),
     hook: CANONICAL_HOOK, poolManager: "0x28e2Ea090877bF75740558f6BFB36A5ffeE9e9dF",
     deployBlock: 114546905, explorer: "https://bscscan.com",
     universalRouter: "0x1906c1d672b88cd1b9ac7593301ca990f94eae07",
   },
   {
     chain: polygon, slug: "polygon", label: "Polygon", testnet: false,
-    rpcs: rpcsFor(137, "https://polygon-rpc.com", "https://polygon-bor-rpc.publicnode.com", "https://polygon.drpc.org"),
+    // publicnode first (10k getLogs range); polygon-rpc.com returns 401 outright
+    rpcs: rpcsFor(137, "https://polygon-bor-rpc.publicnode.com", "https://polygon.drpc.org", "https://polygon-rpc.com"),
     hook: CANONICAL_HOOK, poolManager: "0x67366782805870060151383F4BbFF9daB53e5cD6",
     deployBlock: 91600016, explorer: "https://polygonscan.com",
     universalRouter: "0x1095692a6237d83c6a72f3f5efedb9a670c49223",
   },
   {
     chain: worldchain, slug: "worldchain", label: "World Chain", testnet: false,
-    rpcs: rpcsFor(480, "https://worldchain-mainnet.g.alchemy.com/public", "https://worldchain.drpc.org"),
+    // drpc first (10k getLogs range); the alchemy public gateway refuses getLogs at any range
+    rpcs: rpcsFor(480, "https://worldchain.drpc.org", "https://worldchain-mainnet.g.alchemy.com/public"),
     hook: CANONICAL_HOOK, poolManager: "0xb1860D529182ac3BC1F51Fa2ABd56662b7D13f33",
     deployBlock: 33384712, explorer: "https://worldscan.org",
     universalRouter: "0x8ac7bee993bb44dab564ea4bc9ea67bf9eb5e743",
@@ -219,10 +231,12 @@ export const NETS: Net[] = [
     hook: CANONICAL_HOOK, poolManager: "0x33620f62C5b9B2086dD6b62F4A297A9f30347029",
     deployBlock: 33657201, explorer: "https://explore.tempo.xyz",
     universalRouter: "0xa2dc7d0266f0cc50b3eeaf36c9bfcecff1beea91",
+    noNative: true,
   },
   {
     chain: avalanche, slug: "avalanche", label: "Avalanche", testnet: false,
-    rpcs: rpcsFor(43114, "https://api.avax.network/ext/bc/C/rpc", "https://avalanche-c-chain-rpc.publicnode.com", "https://avalanche.drpc.org"),
+    // publicnode first (unlimited getLogs); the official api caps ranges at 2048
+    rpcs: rpcsFor(43114, "https://avalanche-c-chain-rpc.publicnode.com", "https://api.avax.network/ext/bc/C/rpc", "https://avalanche.drpc.org"),
     hook: CANONICAL_HOOK, poolManager: "0x06380C0e0912312B5150364B9DC4542BA0DbBc85",
     deployBlock: 92242906,
     explorer: "https://snowscan.xyz",
@@ -230,7 +244,8 @@ export const NETS: Net[] = [
   },
   {
     chain: blast, slug: "blast", label: "Blast", testnet: false,
-    rpcs: rpcsFor(81457, "https://rpc.blast.io", "https://blast-rpc.publicnode.com", "https://blast.drpc.org"),
+    // publicnode first (unlimited getLogs); rpc.blast.io 413s on wide ranges
+    rpcs: rpcsFor(81457, "https://blast-rpc.publicnode.com", "https://rpc.blast.io", "https://blast.drpc.org"),
     // Ring Protocol's v4-core deployment — runtime bytecode is byte-identical to the canonical
     // PoolManager (only the embedded self-address immutable differs); verified on-chain.
     hook: CANONICAL_HOOK, poolManager: "0x1631559198A9e474033433b2958daBC135ab6446",
@@ -240,7 +255,8 @@ export const NETS: Net[] = [
   },
   {
     chain: celo, slug: "celo", label: "Celo", testnet: false,
-    rpcs: rpcsFor(42220, "https://forno.celo.org", "https://celo-rpc.publicnode.com", "https://celo.drpc.org"),
+    // publicnode first (unlimited getLogs); forno caps ranges around 2k
+    rpcs: rpcsFor(42220, "https://celo-rpc.publicnode.com", "https://forno.celo.org", "https://celo.drpc.org"),
     hook: CANONICAL_HOOK, poolManager: "0x288dc841A52FCA2707c6947B3A777c5E56cd87BC",
     deployBlock: 74204388,
     explorer: "https://celoscan.io",
@@ -248,7 +264,9 @@ export const NETS: Net[] = [
   },
   {
     chain: monad, slug: "monad", label: "Monad", testnet: false,
-    rpcs: rpcsFor(143, "https://rpc.monad.xyz", "https://monad.drpc.org"),
+    // drpc first: it serves getLogs up to ~1k blocks (the scanner adapts);
+    // rpc.monad.xyz refuses getLogs entirely (413) — read fallback only
+    rpcs: rpcsFor(143, "https://monad.drpc.org", "https://rpc.monad.xyz"),
     hook: CANONICAL_HOOK, poolManager: "0x188d586Ddcf52439676Ca21A244753fA19F9Ea8e",
     deployBlock: 93918120,
     explorer: "https://monadvision.com",
@@ -256,7 +274,8 @@ export const NETS: Net[] = [
   },
   {
     chain: xLayer, slug: "xlayer", label: "X Layer", testnet: false,
-    rpcs: rpcsFor(196, "https://rpc.xlayer.tech", "https://xlayer.drpc.org"),
+    // drpc first (10k getLogs range); rpc.xlayer.tech refuses getLogs at any range
+    rpcs: rpcsFor(196, "https://xlayer.drpc.org", "https://rpc.xlayer.tech"),
     hook: CANONICAL_HOOK, poolManager: "0x360E68faCcca8cA495c1B759Fd9EEe466db9FB32",
     deployBlock: 67336132,
     explorer: "https://www.oklink.com/x-layer",

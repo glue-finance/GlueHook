@@ -43,7 +43,9 @@ const EVENTS: AbiEvent[] = [
   ),
 ];
 
-type FeedCache = { v: 1; lastBlock: string; events: PoolEvent[] };
+// v2: the frontier is the block the scan actually REACHED (a v1 cache could
+// be stamped "done" with events missing after one bad RPC day — rescan those)
+type FeedCache = { v: 2; lastBlock: string; events: PoolEvent[] };
 
 const feedKey = (chainId: number, poolId: string) => `gh.feed.${chainId}.${poolId.toLowerCase()}`;
 
@@ -53,13 +55,13 @@ function loadFeed(chainId: number, poolId: string): FeedCache {
       const raw = localStorage.getItem(feedKey(chainId, poolId));
       if (raw) {
         const c = JSON.parse(raw) as FeedCache;
-        if (c.v === 1) return c;
+        if (c.v === 2) return c;
       }
     } catch {
       /* rescan */
     }
   }
-  return { v: 1, lastBlock: "0", events: [] };
+  return { v: 2, lastBlock: "0", events: [] };
 }
 
 function saveFeed(chainId: number, poolId: string, c: FeedCache) {
@@ -90,7 +92,7 @@ export async function fetchPoolEvents(
   const latest = await client.getBlockNumber();
 
   if (from <= latest) {
-    const logs = await scanLogs(client, {
+    const { logs, scannedTo } = await scanLogs(client, {
       address: net.hook,
       events: EVENTS,
       args: { poolId },
@@ -120,8 +122,12 @@ export async function fetchPoolEvents(
       });
     }
     cache.events.sort((a, b) => a.block - b.block || a.logIndex - b.logIndex);
-    cache.lastBlock = latest.toString();
-    saveFeed(net.chain.id, poolId, cache);
+    // persist how far the scan actually GOT — an interrupted scan resumes
+    // from the failure point instead of stamping the gap as "done"
+    if (scannedTo >= from) {
+      cache.lastBlock = scannedTo.toString();
+      saveFeed(net.chain.id, poolId, cache);
+    }
   }
 
   return cache.events;

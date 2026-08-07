@@ -18,8 +18,10 @@ export type RegisteredPool = {
   block: number;
 };
 
+// v3: the frontier is the block the scan actually REACHED (a v2 cache could
+// be stamped "done" with pools missing after one bad RPC day — rescan those)
 type Cache = {
-  v: 2;
+  v: 3;
   lastBlock: string;
   pools: Record<string, { key: PoolKey | null; admin: Address; block: number }>;
 };
@@ -44,13 +46,13 @@ function loadCache(chainId: number): Cache {
       const raw = localStorage.getItem(cacheKey(chainId));
       if (raw) {
         const c = JSON.parse(raw) as Cache;
-        if (c.v === 2) return c;
+        if (c.v === 3) return c;
       }
     } catch {
       /* corrupted cache → rescan */
     }
   }
-  return { v: 2, lastBlock: "0", pools: {} };
+  return { v: 3, lastBlock: "0", pools: {} };
 }
 
 function saveCache(chainId: number, c: Cache) {
@@ -103,7 +105,7 @@ async function keyFromPoolManager(net: Net, poolId: Hex): Promise<PoolKey | null
   const client = clientForNet(net);
   try {
     const latest = await client.getBlockNumber();
-    const logs = await scanLogs(client, {
+    const { logs } = await scanLogs(client, {
       address: net.poolManager,
       events: [pmInitializeEvent],
       args: { id: poolId },
@@ -149,7 +151,7 @@ export async function scanPools(
   const latest = await client.getBlockNumber();
 
   if (from <= latest) {
-    const logs = await scanLogs(client, {
+    const { logs, scannedTo } = await scanLogs(client, {
       address: net.hook,
       events: [potOpenedEvent],
       fromBlock: from,
@@ -174,8 +176,12 @@ export async function scanPools(
         block: Number(log.blockNumber ?? 0n),
       };
     }
-    cache.lastBlock = latest.toString();
-    saveCache(net.chain.id, cache);
+    // persist how far the scan actually GOT — an interrupted scan resumes
+    // from the failure point instead of stamping the gap as "done"
+    if (scannedTo >= from) {
+      cache.lastBlock = scannedTo.toString();
+      saveCache(net.chain.id, cache);
+    }
   }
 
   return Object.entries(cache.pools).map(([poolId, p]) => ({

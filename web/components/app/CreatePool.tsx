@@ -147,7 +147,9 @@ export function CreatePool({
 
   /* ------------------------------ pair + fee ------------------------------ */
   const [tokenA, setTokenA] = useState("");
-  const [tokenB, setTokenB] = useState<string>(zeroAddress); // native pre-picked — swap it for any token
+  // native pre-picked (swap it for any token) — except on a no-native chain
+  // like Tempo, where the "native" coin doesn't exist: start both empty
+  const [tokenB, setTokenB] = useState<string>(net.noNative ? "" : zeroAddress);
   const [feeIdx, setFeeIdx] = useState(2); // 0.30%
 
   const addrA = isAddress(tokenA) ? (tokenA as Address) : null;
@@ -249,9 +251,12 @@ export function CreatePool({
   /* ------------------------------- actions ------------------------------- */
 
   const [phase, setPhase] = useState<string | null>(null);
-  const [approving, setApproving] = useState<Address | null>(null);
 
-  // Approvals are their own explicit buttons (Uniswap-style), driven by live allowance reads
+  // Live allowance reads gate the ONE action button, Uniswap-style: while an
+  // approval is missing the button IS that approval — one transaction per
+  // press, and the label advances once `send` verified the receipt (it also
+  // waits for our read RPCs to reach the receipt's block, so the refetch
+  // below can't come back stale).
   const amt0 = parseAmt(amounts.a0, dec0);
   const amt1 = parseAmt(amounts.a1, dec1);
   const allow0 = useAllowance(net, key?.currency0, me, net.hook);
@@ -264,8 +269,12 @@ export function CreatePool({
     (!!key && !isNative(key.currency0) && amt0 > 0n && allow0.data === undefined) ||
     (!!key && !isNative(key.currency1) && amt1 > 0n && allow1.data === undefined);
 
-  async function approve(token: Address, sym: string) {
-    setApproving(token);
+  /** one press = one approval — the next press does the next step */
+  async function approveNext() {
+    if (!key) return;
+    const token = needApprove0 ? key.currency0 : key.currency1;
+    const sym = needApprove0 ? sym0 : sym1;
+    setPhase(`approving ${sym}…`);
     try {
       await send({
         address: token,
@@ -275,19 +284,18 @@ export function CreatePool({
       });
       await Promise.all([allow0.refetch(), allow1.refetch()]);
     } finally {
-      setApproving(null);
+      setPhase(null);
     }
   }
 
   /**
-   * The whole launch behind ONE button: missing token approvals are requested
-   * automatically, then the pool launches in a single transaction
+   * The launch itself — the pool launches in a single transaction
    * (initialize + roles + seeded program). On an already-live pool the same
    * button switches the machine on (if needed) and seeds the liquidity.
    */
   async function doLaunch() {
     if (!key || !mainAddr || liquidity <= 0n) return;
-    if (needApprove0 || needApprove1) return; // approvals have their own buttons
+    if (needApprove0 || needApprove1) return; // the button is the approval until then
     const value = isNative(key.currency0) ? amt0 : 0n;
     try {
       if (!initialized) {
@@ -458,7 +466,7 @@ export function CreatePool({
                     value={addrA}
                     symbol={metaA.data?.symbol}
                     onChange={(a) => setTokenA(a)}
-                    allowNative
+                    allowNative={!net.noNative}
                     exclude={addrB}
                     placeholder="Select your token"
                   />
@@ -467,7 +475,7 @@ export function CreatePool({
                     value={addrB}
                     symbol={metaB.data?.symbol}
                     onChange={(a) => setTokenB(a)}
-                    allowNative
+                    allowNative={!net.noNative}
                     exclude={addrA}
                     placeholder="Select the second token"
                   />
@@ -818,63 +826,46 @@ export function CreatePool({
                 </div>
               </div>
 
-              {/* approvals first, each with its OWN button — then the one launch action */}
-              {(needApprove0 || needApprove1) && (
-                <div className="space-y-2.5">
-                  {needApprove0 && key && (
-                    <button
-                      className="btn-approve"
-                      disabled={busy || approving !== null}
-                      onClick={() => approve(key.currency0, sym0)}
-                    >
-                      {approving === key.currency0 ? `approving ${sym0}…` : `Approve ${sym0}`}
-                    </button>
-                  )}
-                  {needApprove1 && key && (
-                    <button
-                      className="btn-approve"
-                      disabled={busy || approving !== null}
-                      onClick={() => approve(key.currency1, sym1)}
-                    >
-                      {approving === key.currency1 ? `approving ${sym1}…` : `Approve ${sym1}`}
-                    </button>
-                  )}
-                </div>
-              )}
-
+              {/* ONE button, Uniswap-style — while approvals are missing it IS the
+                  next approval; each press fires one transaction and the label
+                  advances on the verified receipt */}
               <button
                 className="btn-launch"
                 disabled={
                   !key ||
                   (!initialized && !launchSqrt) ||
                   liquidity <= 0n ||
-                  needApprove0 ||
-                  needApprove1 ||
                   allowancesLoading ||
                   // An add sends no config and touches no roles; only the create path validates them
                   (programExists ? notProgramOwner : recipientBad || !!cfgErr) ||
                   busy ||
                   phase !== null
                 }
-                onClick={doLaunch}
+                onClick={needApprove0 || needApprove1 ? approveNext : doLaunch}
               >
                 {phase ??
-                  (needApprove0 || needApprove1
-                    ? "approve the tokens above first"
-                    : !initialized
-                      ? "Launch the pool"
-                      : programExists
-                        ? "Add liquidity to the program"
-                        : potReady
-                          ? "Seed the liquidity"
-                          : "Switch on + seed")}
+                  (allowancesLoading
+                    ? "checking approvals…"
+                    : needApprove0
+                      ? `Approve ${sym0}`
+                      : needApprove1
+                        ? `Approve ${sym1}`
+                        : !initialized
+                          ? "Launch the pool"
+                          : programExists
+                            ? "Add liquidity to the program"
+                            : potReady
+                              ? "Seed the liquidity"
+                              : "Switch on + seed")}
               </button>
               <p className="mono -mt-2 text-center text-[10.5px] text-dim2">
-                {!initialized
-                  ? "one transaction — pool, roles, rules and liquidity all land together."
-                  : programExists
-                    ? "one transaction — your deposit joins the live program."
-                    : "one transaction — rules and liquidity land together."}
+                {needApprove0 || needApprove1
+                  ? `${needApprove0 && needApprove1 ? "two approvals" : "one approval"} first — one press per step, then the launch.`
+                  : !initialized
+                    ? "one transaction — pool, roles, rules and liquidity all land together."
+                    : programExists
+                      ? "one transaction — your deposit joins the live program."
+                      : "one transaction — rules and liquidity land together."}
               </p>
 
               <TxStatus tx={tx} net={net} />

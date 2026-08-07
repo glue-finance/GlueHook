@@ -6,14 +6,17 @@
  *   0x0c SETTLE_ALL           (pay the input currency, capped)
  *   0x0f TAKE_ALL             (collect the output currency, floored)
  *
- * An ERC20 input flows through Permit2 (approve token→Permit2 once, then
- * Permit2.approve(token, router)); a native input rides as msg.value.
+ * An ERC20 input flows through Permit2: approve token→Permit2 ONCE on-chain,
+ * then the Permit2→router grant rides the swap itself as a GASLESS EIP-712
+ * signature via UR command 0x0a (PERMIT2_PERMIT) — never a second approval
+ * transaction. A native input rides as msg.value.
  */
 
 import { encodeAbiParameters, type Address, type Hex } from "viem";
 import type { PoolKey } from "./hook";
 
 export const UR_COMMAND_V4_SWAP = "0x10";
+export const UR_COMMAND_PERMIT2_PERMIT = "0x0a";
 
 const ACTION_SWAP_EXACT_IN_SINGLE = 0x06;
 const ACTION_SETTLE_ALL = 0x0c;
@@ -62,6 +65,57 @@ export const permit2Abi = [
     ],
   },
 ] as const;
+
+/* ------------------------------------------------ Permit2 signature permit */
+
+/** EIP-712 typed-data shape of Permit2's AllowanceTransfer PermitSingle */
+export const PERMIT2_TYPES = {
+  PermitDetails: [
+    { name: "token", type: "address" },
+    { name: "amount", type: "uint160" },
+    { name: "expiration", type: "uint48" },
+    { name: "nonce", type: "uint48" },
+  ],
+  PermitSingle: [
+    { name: "details", type: "PermitDetails" },
+    { name: "spender", type: "address" },
+    { name: "sigDeadline", type: "uint256" },
+  ],
+} as const;
+
+export type PermitSingle = {
+  details: { token: Address; amount: bigint; expiration: number; nonce: number };
+  spender: Address;
+  sigDeadline: bigint;
+};
+
+/** the UR input for command 0x0a — abi.encode(PermitSingle, signature) */
+export function encodePermit2PermitInput(permit: PermitSingle, signature: Hex): Hex {
+  return encodeAbiParameters(
+    [
+      {
+        type: "tuple",
+        name: "permitSingle",
+        components: [
+          {
+            type: "tuple",
+            name: "details",
+            components: [
+              { type: "address", name: "token" },
+              { type: "uint160", name: "amount" },
+              { type: "uint48", name: "expiration" },
+              { type: "uint48", name: "nonce" },
+            ],
+          },
+          { type: "address", name: "spender" },
+          { type: "uint256", name: "sigDeadline" },
+        ],
+      },
+      { type: "bytes", name: "signature" },
+    ],
+    [permit, signature],
+  );
+}
 
 const POOL_KEY_COMPONENTS = [
   { type: "address", name: "currency0" },

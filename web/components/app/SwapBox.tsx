@@ -9,13 +9,22 @@ import {
   parseUnits,
   type Abi,
   type Address,
+  type Hex,
 } from "viem";
-import { useAccount } from "wagmi";
+import { useAccount, useSignTypedData, useSwitchChain } from "wagmi";
 import { PERMIT2, type Net } from "@/lib/chains";
 import { clientForNet } from "@/lib/client";
 import { ftoken } from "@/lib/format";
 import { isNative } from "@/lib/hook";
-import { encodeV4ExactInSingle, permit2Abi, universalRouterAbi } from "@/lib/router";
+import {
+  encodePermit2PermitInput,
+  encodeV4ExactInSingle,
+  PERMIT2_TYPES,
+  permit2Abi,
+  UR_COMMAND_PERMIT2_PERMIT,
+  universalRouterAbi,
+  type PermitSingle,
+} from "@/lib/router";
 import { useBalanceOf, usePoolState } from "@/lib/usePoolState";
 import { useTokenMeta, type TokenMeta } from "@/lib/usePool";
 import { usePairUsd, usdStr } from "@/lib/usd";
@@ -27,13 +36,17 @@ import { TokenIconFor } from "./TokenIcon";
 
 /**
  * The swap form, content-only — embedded as the first (default) section of the
- * pool's action box. Quotes locally from the pool's own state, routes through
- * the Universal Router, and walks the two Permit2 approval stages with explicit
- * Uniswap-style buttons.
+ * pool's action box. Quotes locally from the pool's own state and routes
+ * through the Universal Router, Uniswap-style: an ERC20 input takes ONE
+ * on-chain approve (token→Permit2, once per token ever) on its own press,
+ * and the Permit2→router grant rides the swap transaction itself as a
+ * gasless EIP-712 signature — there is never a second approval transaction.
  */
 export function SwapPanel({ net, pool }: { net: Net; pool: RegisteredPool }) {
   const key = pool.key;
-  const { address: me } = useAccount();
+  const { address: me, chainId } = useAccount();
+  const { switchChainAsync } = useSwitchChain();
+  const { signTypedDataAsync } = useSignTypedData();
   const state = usePoolState(net, pool.poolId);
   const meta0 = useTokenMeta(net, key?.currency0);
   const meta1 = useTokenMeta(net, key?.currency1);
@@ -56,9 +69,10 @@ export function SwapPanel({ net, pool }: { net: Net; pool: RegisteredPool }) {
   const uIn = zeroForOne ? u0 : u1;
   const uOut = zeroForOne ? u1 : u0;
 
-  // permit2 plumbing state for an ERC20 input
-  const [needsTokenApprove, setNeedsTokenApprove] = useState(false);
-  const [needsPermit2, setNeedsPermit2] = useState(false);
+  // permit2 plumbing state for an ERC20 input — null = still being checked;
+  // the gates decide what the button does, so it stays disabled until known
+  const [needsTokenApprove, setNeedsTokenApprove] = useState<boolean | null>(null);
+  const [needsPermit2, setNeedsPermit2] = useState<boolean | null>(null);
 
   const amountIn = useMemo(() => {
     try {
@@ -91,6 +105,9 @@ export function SwapPanel({ net, pool }: { net: Net; pool: RegisteredPool }) {
       setNeedsPermit2(false);
       return;
     }
+    // unknown until the read lands — the button waits rather than guessing
+    setNeedsTokenApprove(null);
+    setNeedsPermit2(null);
     let dead = false;
     const client = clientForNet(net);
     (async () => {
@@ -141,22 +158,83 @@ export function SwapPanel({ net, pool }: { net: Net; pool: RegisteredPool }) {
   const outUsd =
     quote && outMeta ? usdStr(Number(formatUnits(quote.amountOut, outMeta.decimals)), uOut) : null;
 
+  /**
+   * ONE button, one transaction per press. "Approve" grants token→Permit2
+   * (the only on-chain approval an ERC20 ever needs); "Swap" swaps — and when
+   * the Permit2→router allowance is short, the same swap transaction carries
+   * a gasless PermitSingle signature (UR command 0x0a), Uniswap-style, so a
+   * second approval transaction never exists.
+   */
   async function submit() {
-    if (!quote || amountIn <= 0n) return;
+    if (!quote || amountIn <= 0n || !me || !inToken) return;
+
+    // step 1 — token → Permit2 (once per token, ever)
+    if (needsTokenApprove) {
+      await send({
+        address: inToken,
+        abi: erc20Abi,
+        functionName: "approve",
+        args: [PERMIT2, maxUint256],
+      });
+      return;
+    }
+
+    // step 2 — the swap, carrying a Permit2 signature when the router grant is short
+    let permitInput: Hex | null = null;
+    if (!nativeIn && needsPermit2) {
+      try {
+        // the signature's domain is chain-bound — make sure the wallet is on it
+        if (chainId !== net.chain.id) await switchChainAsync({ chainId: net.chain.id });
+        // fresh nonce — Permit2 increments it on every permit
+        const [, , nonce] = (await clientForNet(net).readContract({
+          address: PERMIT2,
+          abi: permit2Abi,
+          functionName: "allowance",
+          args: [me, inToken, net.universalRouter!],
+        })) as [bigint, number, number];
+        const now = Math.floor(Date.now() / 1000);
+        const permit: PermitSingle = {
+          details: {
+            token: inToken,
+            amount: maxUint160,
+            expiration: now + 30 * 24 * 3600, // 30 days — later swaps skip the signature
+            nonce,
+          },
+          spender: net.universalRouter!,
+          sigDeadline: BigInt(now + 1800),
+        };
+        const signature = await signTypedDataAsync({
+          domain: { name: "Permit2", chainId: net.chain.id, verifyingContract: PERMIT2 },
+          types: PERMIT2_TYPES,
+          primaryType: "PermitSingle",
+          message: permit,
+        });
+        permitInput = encodePermit2PermitInput(permit, signature);
+      } catch {
+        return; // signature rejected / unavailable — nothing was sent
+      }
+    }
+
     const { commands, inputs } = encodeV4ExactInSingle({
       key: key!,
       zeroForOne,
       amountIn,
       minAmountOut: minOut,
     });
-    await send({
+    const done = await send({
       address: net.universalRouter!,
       abi: universalRouterAbi as Abi,
       functionName: "execute",
-      args: [commands, inputs, BigInt(Math.floor(Date.now() / 1000) + 1800)],
+      args: permitInput
+        ? [
+            (UR_COMMAND_PERMIT2_PERMIT + commands.slice(2)) as Hex,
+            [permitInput, ...inputs],
+            BigInt(Math.floor(Date.now() / 1000) + 1800),
+          ]
+        : [commands, inputs, BigInt(Math.floor(Date.now() / 1000) + 1800)],
       value: nativeIn ? amountIn : 0n,
     });
-    setAmount("");
+    if (done) setAmount("");
   }
 
   return (
@@ -253,53 +331,31 @@ export function SwapPanel({ net, pool }: { net: Net; pool: RegisteredPool }) {
         ))}
       </div>
 
-      {/* ERC20 input: the two Permit2 stages as explicit approve buttons */}
-      {needsTokenApprove && inToken && (
-        <button
-          className="btn-approve mt-3"
-          disabled={busy}
-          onClick={() =>
-            send({
-              address: inToken,
-              abi: erc20Abi,
-              functionName: "approve",
-              args: [PERMIT2, maxUint256],
-            })
-          }
-        >
-          Approve {inSym}
-        </button>
-      )}
-      {!needsTokenApprove && needsPermit2 && inToken && (
-        <button
-          className="btn-approve mt-3"
-          disabled={busy}
-          onClick={() =>
-            send({
-              address: PERMIT2,
-              abi: permit2Abi as Abi,
-              functionName: "approve",
-              args: [inToken, net.universalRouter!, maxUint160, 2n ** 48n - 1n],
-            })
-          }
-        >
-          Allow the router to spend {inSym}
-        </button>
-      )}
-
+      {/* ONE button, Uniswap-style — the label IS the next step */}
       <button
         className="btn-launch mt-3"
         disabled={
           !quote ||
           amountIn <= 0n ||
-          needsTokenApprove ||
-          needsPermit2 ||
-          busy
+          busy ||
+          needsTokenApprove === null ||
+          needsPermit2 === null
         }
         onClick={submit}
       >
-        {needsTokenApprove || needsPermit2 ? "approve first" : "Swap"}
+        {needsTokenApprove === null || needsPermit2 === null
+          ? "checking approvals…"
+          : needsTokenApprove
+            ? `Approve ${inSym}`
+            : "Swap"}
       </button>
+      {(needsTokenApprove || needsPermit2) && !busy && (
+        <p className="mono mt-1.5 text-center text-[10.5px] text-dim2">
+          {needsTokenApprove
+            ? `one-time approval for ${inSym} — the swap comes next, with a free signature`
+            : `the swap carries a free Permit2 signature — no extra transaction`}
+        </p>
+      )}
       <TxStatus tx={tx} net={net} />
 
       {state.data?.initialized === false && (

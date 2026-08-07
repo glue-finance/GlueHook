@@ -5,8 +5,17 @@ import { liquiditySeries, projectLiquidity } from "@/lib/derive";
 import type { PoolEvent } from "@/lib/events";
 import { fnum } from "@/lib/format";
 import { LineChart } from "./LineChart";
+import { ScanBar } from "./ScanBar";
 
-export function LiquidityChart({ events, loading }: { events: PoolEvent[]; loading: boolean }) {
+export function LiquidityChart({
+  events,
+  loading,
+  progress = null,
+}: {
+  events: PoolEvent[];
+  loading: boolean;
+  progress?: number | null;
+}) {
   const { live, proj, compounds } = useMemo(() => {
     const live = liquiditySeries(events);
     const proj = projectLiquidity(live);
@@ -23,6 +32,11 @@ export function LiquidityChart({ events, loading }: { events: PoolEvent[]; loadi
           {loading ? <span className="pill">scanning…</span> : <span className="livedot" />}
         </span>
       </div>
+      {loading && (
+        <div className="px-4 pt-3">
+          <ScanBar progress={progress} thin />
+        </div>
+      )}
       <div className="p-4">
         <LineChart
           series={[

@@ -31,6 +31,30 @@ export const EMPTY_DRAFT: ConfigDraft = {
   minSecondary: "0",
 };
 
+/**
+ * Apply a slider patch, shrinking whatever no longer fits.
+ *
+ * Each group is a "≤ 100%" rule, and a slider's `max` prop only narrows the
+ * range it can be DRAGGED through — it cannot lower a value that is already
+ * set. So raising compound past a partner sitting at 100% used to strand that
+ * partner above its own cap, where the only feedback was a blocked submit.
+ *
+ * Compound wins its two groups outright: it is the one share that governs both
+ * fee sides, so buyback and burn yield to it. The pot split is two peers, so
+ * there the slider named in the patch is the one that keeps its value.
+ */
+export function clampDraft(prev: ConfigDraft, patch: Partial<ConfigDraft>): ConfigDraft {
+  const next = { ...prev, ...patch };
+  const room = Math.max(0, 100 - next.compoundPct);
+  next.buybackPct = Math.min(next.buybackPct, room);
+  next.burnPct = Math.min(next.burnPct, room);
+  if (next.potCompoundPct + next.potBurnPct > 100) {
+    if ("potCompoundPct" in patch) next.potBurnPct = Math.max(0, 100 - next.potCompoundPct);
+    else next.potCompoundPct = Math.max(0, 100 - next.potBurnPct);
+  }
+  return next;
+}
+
 export function draftToConfig(d: ConfigDraft, mainDec: number, secDec: number): ProgramConfig {
   const pctToWad = (p: number) => (BigInt(Math.round(p * 100)) * WAD) / 10_000n;
   const addr = (s: string): Address => (isAddress(s) ? (s as Address) : zeroAddress);
@@ -117,7 +141,7 @@ export function ConfigEditor({
   main?: TokenMeta;
   sec?: TokenMeta;
 }) {
-  const set = (patch: Partial<ConfigDraft>) => onChange({ ...draft, ...patch });
+  const set = (patch: Partial<ConfigDraft>) => onChange(clampDraft(draft, patch));
   const err = useMemo(
     () => configError(draft, mainIsNative, main?.decimals ?? 18, sec?.decimals ?? 18),
     [draft, mainIsNative, main, sec],

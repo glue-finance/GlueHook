@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { DEXSCREENER_CHAIN, type Net } from "@/lib/chains";
+import { useIsMobile } from "@/lib/useIsMobile";
 
 /**
  * DexScreener embed — chart + live transactions for a Uniswap V4 pool.
@@ -10,12 +11,19 @@ import { DEXSCREENER_CHAIN, type Net } from "@/lib/chains";
  * DexScreener indexes (DEXSCREENER_CHAIN) — everywhere else it's a no-op.
  *
  * The sandbox deliberately OMITS allow-top-navigation: with it granted the
- * embed can (and on mobile does) navigate the whole app away, which shows up
- * as the page "refreshing" while the chart loads. Everything the chart needs
- * stays granted.
+ * embed can navigate the whole app away.
+ *
+ * On phones the chart is loaded ON TAP instead of automatically. The embed is
+ * a full charting runtime with its own websocket, and mounting it next to the
+ * app's own state was enough to push mobile Safari over its per-tab memory
+ * ceiling — at which point the browser discards the page and reloads it from
+ * scratch, which reads as "the page refreshes when the chart loads". Deferring
+ * it keeps the decision (and the memory) with the user. Desktop is unaffected.
  */
 export function DexScreenerEmbed({ net, poolId }: { net: Net; poolId: string }) {
   const chain = DEXSCREENER_CHAIN[net.slug];
+  const isMobile = useIsMobile();
+  const [armed, setArmed] = useState(false);
 
   const src = useMemo(() => {
     if (!chain) return null;
@@ -34,6 +42,10 @@ export function DexScreenerEmbed({ net, poolId }: { net: Net; poolId: string }) 
 
   if (!chain || !src) return null;
 
+  // null = breakpoint not read yet; hold off rather than mount the heavy
+  // desktop iframe on a phone just to unmount it on the next tick
+  const show = isMobile === false || armed;
+
   return (
     <div className="panel overflow-hidden">
       <div className="chead">
@@ -47,16 +59,33 @@ export function DexScreenerEmbed({ net, poolId }: { net: Net; poolId: string }) 
           dexscreener ↗
         </a>
       </div>
-      <iframe
-        key={src}
-        src={src}
-        title="DexScreener chart & trades"
-        loading="lazy"
-        allow="clipboard-write"
-        // no allow-top-navigation: a sandboxed embed can never reload the app
-        sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-forms"
-        className="block h-[560px] w-full border-0 lg:h-[680px]"
-      />
+      {show ? (
+        <iframe
+          key={src}
+          src={src}
+          title="DexScreener chart & trades"
+          loading="lazy"
+          allow="clipboard-write"
+          // no allow-top-navigation: a sandboxed embed can never reload the app
+          sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-forms"
+          className="block h-[560px] w-full border-0 lg:h-[680px]"
+        />
+      ) : (
+        <div className="flex h-[240px] flex-col items-center justify-center gap-3 px-6 text-center">
+          <div className="mono text-[11px] leading-relaxed text-dim2">
+            price chart & trades, straight from DexScreener
+          </div>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            disabled={isMobile === null}
+            onClick={() => setArmed(true)}
+          >
+            load chart
+          </button>
+          <div className="mono text-[10px] text-dim2">it&apos;s a heavy embed — loads on tap</div>
+        </div>
+      )}
     </div>
   );
 }

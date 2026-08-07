@@ -20,19 +20,7 @@ import { NETS, netBySlug, type Net } from "@/lib/chains";
 import { short } from "@/lib/format";
 import { importPool, type RegisteredPool } from "@/lib/registry";
 import { useFeed, usePot, useProgram, useTokenMeta } from "@/lib/usePool";
-
-/** matches Tailwind's `lg` breakpoint — below it the pool view uses its own tabs */
-function useIsMobile() {
-  const [mobile, setMobile] = useState(false);
-  useEffect(() => {
-    const q = window.matchMedia("(max-width: 1023px)");
-    const sync = () => setMobile(q.matches);
-    sync();
-    q.addEventListener("change", sync);
-    return () => q.removeEventListener("change", sync);
-  }, []);
-  return mobile;
-}
+import { useIsMobile } from "@/lib/useIsMobile";
 
 type MobileTab = "info" | "trade" | "charts" | "manage";
 type Tab = "live" | "simulate";
@@ -325,6 +313,7 @@ function AppInner() {
                   main={mainMeta.data}
                   sec={secMeta.data}
                   loading={feed.loading}
+                  progress={feed.progress}
                 />
               </div>
             )}
@@ -342,7 +331,7 @@ function AppInner() {
             )}
             {mtab === "charts" && (
               <div className="space-y-4">
-                <LiquidityChart events={feed.events} loading={feed.loading} />
+                <LiquidityChart events={feed.events} loading={feed.loading} progress={feed.progress} />
                 <PotGauge net={net} pool={pool} pot={pot.data} events={feed.events} />
                 <DexScreenerEmbed net={net} poolId={pool.poolId} />
               </div>
@@ -376,13 +365,14 @@ function AppInner() {
                 main={mainMeta.data}
                 sec={secMeta.data}
                 loading={feed.loading}
+                progress={feed.progress}
               />
             </div>
 
             {/* right column */}
             <div className="space-y-6">
               <PoolDashboard net={net} pool={pool} pot={pot.data} />
-              <LiquidityChart events={feed.events} loading={feed.loading} />
+              <LiquidityChart events={feed.events} loading={feed.loading} progress={feed.progress} />
               <PotGauge net={net} pool={pool} pot={pot.data} events={feed.events} />
               <DexScreenerEmbed net={net} poolId={pool.poolId} />
             </div>

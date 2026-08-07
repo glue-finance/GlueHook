@@ -8,6 +8,7 @@ import { NetIcon } from "@/components/NetIcon";
 import { short } from "@/lib/format";
 import type { RegisteredPool } from "@/lib/registry";
 import { usePoolList, useTokenMeta } from "@/lib/usePool";
+import { ScanBar } from "./ScanBar";
 import { PairIcons } from "./TokenIcon";
 
 export function NetworkSelect({ net, onChange }: { net: Net; onChange: (n: Net) => void }) {
@@ -175,8 +176,12 @@ export function PoolPicker({
       </div>
       <div className="space-y-1 p-2">
         {isLoading && (
-          <div className="mono px-3 py-6 text-center text-[12px] text-dim2">
-            scanning PotOpened logs{progress !== null ? ` — ${progress}%` : ""}…
+          <div className="px-3 py-6">
+            <ScanBar
+              progress={progress}
+              label="scanning PotOpened logs…"
+              note={`reading ${net.label} history — cached after the first pass`}
+            />
           </div>
         )}
         {!isLoading && (pools?.length ?? 0) === 0 && (

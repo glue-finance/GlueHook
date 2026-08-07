@@ -5,6 +5,7 @@ import type { Net } from "@/lib/chains";
 import type { PoolEvent } from "@/lib/events";
 import { ago, ftoken, short } from "@/lib/format";
 import type { TokenMeta } from "@/lib/usePool";
+import { ScanBar } from "./ScanBar";
 
 const STYLE: Record<string, { color: string; label: string }> = {
   Pumped: { color: "#17b512", label: "PUMP" },
@@ -47,12 +48,14 @@ export function TradeTape({
   main,
   sec,
   loading,
+  progress = null,
 }: {
   net: Net;
   events: PoolEvent[];
   main?: TokenMeta;
   sec?: TokenMeta;
   loading: boolean;
+  progress?: number | null;
 }) {
   const items = useMemo(() => [...events].reverse().slice(0, 40), [events]);
   return (
@@ -64,6 +67,11 @@ export function TradeTape({
           <span className="livedot" />
         </span>
       </div>
+      {loading && (
+        <div className="px-3 pt-2">
+          <ScanBar progress={progress} thin />
+        </div>
+      )}
       <div className="max-h-[340px] overflow-y-auto p-2">
         {items.length === 0 && (
           <div className="mono py-10 text-center text-[12px] text-dim2">

@@ -267,7 +267,10 @@ export function SwapPanel({ net, pool }: { net: Net; pool: RegisteredPool }) {
           <span>{inUsd ? `≈ ${inUsd}` : ""}</span>
           {inBal.data !== undefined && inMeta && (
             <button
-              className="underline decoration-dotted"
+              type="button"
+              // a native max without a priced reserve would spend the gas money
+              disabled={nativeIn && gasReserve.data === undefined}
+              className="underline decoration-dotted disabled:cursor-not-allowed disabled:no-underline disabled:opacity-60"
               onClick={() => {
                 // a native-side max keeps the live gas reserve behind
                 const reserve = nativeIn ? gasReserve.data ?? 0n : 0n;

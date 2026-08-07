@@ -412,6 +412,30 @@ body {
   box-shadow: 0 0 12px rgba(23, 181, 18, 0.35);
   transition: width 0.4s ease;
 }
+.meter.thin {
+  height: 5px;
+}
+/* work with no measurable total: a cached scan reports no windows at all */
+.meter.idle > i {
+  width: 38%;
+  transition: none;
+  animation: meter-slide 1.15s ease-in-out infinite;
+}
+@keyframes meter-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .meter.idle > i {
+    animation: none;
+    width: 100%;
+    opacity: 0.45;
+  }
+}
 
 /* flow diagram */
 .flowbox {

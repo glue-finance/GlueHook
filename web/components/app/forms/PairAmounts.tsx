@@ -106,10 +106,19 @@ export function PairAmounts({
   );
 }
 
-function trim(s: string): string {
-  const n = Number(s);
-  if (!isFinite(n)) return s;
-  return n.toLocaleString("en-US", { maximumFractionDigits: 8, useGrouping: false });
+/**
+ * Cut a decimal string to `dp` places by TRUNCATION, working on the string
+ * itself. Never through Number(): a float round-trip ROUNDS — so a balance of
+ * 0.999999999999999999 came back as "1", i.e. more than the wallet holds — and
+ * it also drops digits past ~17 significant figures. An amount too small to
+ * survive the cut keeps its full precision instead of collapsing to zero.
+ */
+function trim(s: string, dp = 8): string {
+  const [whole, frac = ""] = s.split(".");
+  if (frac.length <= dp) return s;
+  const cut = frac.slice(0, dp).replace(/0+$/, "");
+  if (!cut && /^0*$/.test(whole)) return s;
+  return cut ? `${whole}.${cut}` : whole;
 }
 
 /** One amount box: input, symbol chip, live ≈ $, balance and a gas-aware MAX. */
@@ -133,8 +142,12 @@ export function AmountBox({
   /** USD per whole token, when priceable */
   unitUsd?: number | null;
 }) {
+  // A native MAX without a priced reserve would offer the whole balance and
+  // leave nothing to pay gas with, so it stays unavailable until the fee query
+  // lands rather than falling back to a zero reserve.
+  const reservePending = native && gasReserve === undefined;
   const reserve = native ? gasReserve ?? 0n : 0n;
-  const max = bal === undefined ? null : bal > reserve ? bal - reserve : 0n;
+  const max = bal === undefined || reservePending ? null : bal > reserve ? bal - reserve : 0n;
   const typed = Number(value);
   const usd = unitUsd != null && isFinite(typed) && typed > 0 ? typed * unitUsd : null;
   return (
@@ -163,8 +176,12 @@ export function AmountBox({
           </span>
           {bal !== undefined && (
             <button
-              className="shrink-0 rounded-full border border-green/50 bg-green/10 px-2.5 py-0.5 text-[10px] font-extrabold text-green transition-all hover:bg-green/20"
-              onClick={() => max !== null && onChange(max > 0n ? trim(formatUnits(max, dec)) : "0")}
+              type="button"
+              disabled={max === null}
+              className="shrink-0 rounded-full border border-green/50 bg-green/10 px-2.5 py-0.5 text-[10px] font-extrabold text-green transition-all hover:bg-green/20 disabled:cursor-not-allowed disabled:opacity-40"
+              // the exact string, not a trimmed one: this side is the one the
+              // user is spending, so it must round-trip back to the same wei
+              onClick={() => max !== null && onChange(max > 0n ? formatUnits(max, dec) : "0")}
             >
               MAX
             </button>

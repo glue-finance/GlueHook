@@ -41,6 +41,9 @@ import { SwapPanel } from "./SwapBox";
 
 type Section = "swap" | "add" | "manage" | "donate" | "info";
 
+/** manage splits three ways: your position, the pool's config, who governs it */
+type ManagePanel = "remove" | "config" | "roles";
+
 /**
  * Desktop tab order. `info` leads — and therefore opens by default — because
  * landing on a pool should first tell you what the pool IS, not put a trade
@@ -417,6 +420,7 @@ function Manage({
   const [newOwner, setNewOwner] = useState("");
   const [newOperator, setNewOperator] = useState("");
   const [newRecipient, setNewRecipient] = useState("");
+  const [panel, setPanel] = useState<ManagePanel>("remove");
 
   const state = usePoolState(net, pool.poolId);
   const meta0 = useTokenMeta(net, poolKey.currency0);
@@ -434,6 +438,22 @@ function Manage({
     program?.tickLower,
     program?.tickUpper,
   );
+
+  // Taking your own liquidity out is not an "owner control" in the sense the
+  // other panels are — those change who governs the pool and how it routes
+  // fees, this one just withdraws what you put in. Same address may do both,
+  // but filing them together made withdrawing read like an admin action.
+  const panels = useMemo(() => {
+    const out: { id: ManagePanel; label: string }[] = [];
+    if (isOwner) out.push({ id: "remove", label: "remove LP" });
+    if (isOperator || isOwner) out.push({ id: "config", label: "config" });
+    if (isOwner || isOperator || isAdmin) out.push({ id: "roles", label: "roles" });
+    return out;
+  }, [isOwner, isOperator, isAdmin]);
+
+  useEffect(() => {
+    if (panels.length > 0 && !panels.some((p) => p.id === panel)) setPanel(panels[0].id);
+  }, [panels, panel]);
 
   if (!program?.exists) {
     return (
@@ -509,33 +529,22 @@ function Manage({
         )}
       </div>
 
-      {/* operator: config */}
-      {(isOperator || isOwner) && (
-        <details className="group">
-          <summary className="label cursor-pointer py-1 group-open:text-green">▸ edit program config (operator)</summary>
-          <div className="mt-3 space-y-3">
-            <ConfigEditor draft={liveDraft} onChange={setDraft} mainIsNative={mainIsNative} main={main} sec={sec} />
-            <button
-              className="btn btn-ghost w-full"
-              disabled={!isOperator || !!cfgErr || tx.s === "wallet" || tx.s === "pending"}
-              onClick={() =>
-                send({
-                  functionName: "setProgramConfig",
-                  args: [pool.poolId, draftToConfig(liveDraft, main?.decimals ?? 18, sec?.decimals ?? 18)],
-                })
-              }
-            >
-              {isOperator ? "Save config" : "only the operator can save"}
-            </button>
+      {panels.length > 0 && (
+        <div className="space-y-4">
+          <div className={`tabbar w-full !p-[3px] ${panels.length >= 3 ? "compact" : ""}`}>
+            {panels.map((p) => (
+              <button
+                key={p.id}
+                className={`flex-1 ${panel === p.id ? "on" : ""}`}
+                onClick={() => setPanel(p.id)}
+              >
+                {p.label}
+              </button>
+            ))}
           </div>
-        </details>
-      )}
 
-      {/* owner: liquidity + roles */}
-      {isOwner && (
-        <details className="group">
-          <summary className="label cursor-pointer py-1 group-open:text-green">▸ owner controls</summary>
-          <div className="mt-3 space-y-4">
+          {/* your position — withdrawing what you deposited */}
+          {panel === "remove" && isOwner && (
             <div>
               <div className="mb-1.5 flex items-center justify-between">
                 <span className="label">remove liquidity</span>
@@ -566,76 +575,104 @@ function Manage({
               >
                 Remove {removePct}% of the position
               </button>
+              <p className="mono mt-2 text-[10.5px] leading-relaxed text-dim2">
+                this only moves YOUR liquidity back to your wallet. it changes
+                nothing about who governs the pool — that lives under roles.
+              </p>
             </div>
-            <div>
-              <div className="label mb-1.5">transfer ownership (0x0 = surrender, locks LP forever)</div>
-              <div className="flex gap-2">
-                <input className="input" placeholder="0x…" value={newOwner} onChange={(e) => setNewOwner(e.target.value.trim())} />
-                <button
-                  className="btn btn-ghost btn-sm flex-shrink-0"
-                  disabled={!isAddress(newOwner) && newOwner !== "0x0" || tx.s === "wallet" || tx.s === "pending"}
-                  onClick={() =>
-                    send({
-                      functionName: "transferProgramOwnership",
-                      args: [pool.poolId, newOwner === "0x0" ? zeroAddress : (newOwner as Address)],
-                    })
-                  }
-                >
-                  transfer
-                </button>
-              </div>
-            </div>
-          </div>
-        </details>
-      )}
+          )}
 
-      {(isOperator || isOwner) && (
-        <details className="group">
-          <summary className="label cursor-pointer py-1 group-open:text-green">▸ set operator</summary>
-          <div className="mt-3 flex gap-2">
-            <input className="input" placeholder="0x… (0x0 = surrender settings)" value={newOperator} onChange={(e) => setNewOperator(e.target.value.trim())} />
-            <button
-              className="btn btn-ghost btn-sm flex-shrink-0"
-              disabled={(!isAddress(newOperator) && newOperator !== "0x0") || tx.s === "wallet" || tx.s === "pending"}
-              onClick={() =>
-                send({
-                  functionName: "setProgramOperator",
-                  args: [pool.poolId, newOperator === "0x0" ? zeroAddress : (newOperator as Address)],
-                })
-              }
-            >
-              set
-            </button>
-          </div>
-        </details>
-      )}
-
-      {/* pot admin: recipient */}
-      {isAdmin && (
-        <details className="group">
-          <summary className="label cursor-pointer py-1 group-open:text-green">▸ pot recipient (admin)</summary>
-          <div className="mt-3 space-y-2">
-            <p className="mono text-[10.5px] text-dim2">
-              current: {pot!.recipient === zeroAddress ? "BURN (cascade)" : short(pot!.recipient)} · 0x0 = burn
-              {mainIsNative && " — burn not allowed: MAIN is native"}
-            </p>
-            <div className="flex gap-2">
-              <input className="input" placeholder="0x… (0x0 = burn)" value={newRecipient} onChange={(e) => setNewRecipient(e.target.value.trim())} />
+          {/* how the pool routes its fees */}
+          {panel === "config" && (isOperator || isOwner) && (
+            <div className="space-y-3">
+              <ConfigEditor draft={liveDraft} onChange={setDraft} mainIsNative={mainIsNative} main={main} sec={sec} />
               <button
-                className="btn btn-ghost btn-sm flex-shrink-0"
-                disabled={(!isAddress(newRecipient) && newRecipient !== "0x0") || tx.s === "wallet" || tx.s === "pending"}
+                className="btn btn-ghost w-full"
+                disabled={!isOperator || !!cfgErr || tx.s === "wallet" || tx.s === "pending"}
                 onClick={() =>
                   send({
-                    functionName: "setRecipient",
-                    args: [pool.poolId, newRecipient === "0x0" ? zeroAddress : (newRecipient as Address)],
+                    functionName: "setProgramConfig",
+                    args: [pool.poolId, draftToConfig(liveDraft, main?.decimals ?? 18, sec?.decimals ?? 18)],
                   })
                 }
               >
-                set
+                {isOperator ? "Save config" : "only the operator can save"}
               </button>
             </div>
-          </div>
-        </details>
+          )}
+
+          {/* who governs the pool */}
+          {panel === "roles" && (
+            <div className="space-y-4">
+              {isOwner && (
+                <div>
+                  <div className="label mb-1.5">transfer ownership (0x0 = surrender, locks LP forever)</div>
+                  <div className="flex gap-2">
+                    <input className="input" placeholder="0x…" value={newOwner} onChange={(e) => setNewOwner(e.target.value.trim())} />
+                    <button
+                      className="btn btn-ghost btn-sm flex-shrink-0"
+                      disabled={(!isAddress(newOwner) && newOwner !== "0x0") || tx.s === "wallet" || tx.s === "pending"}
+                      onClick={() =>
+                        send({
+                          functionName: "transferProgramOwnership",
+                          args: [pool.poolId, newOwner === "0x0" ? zeroAddress : (newOwner as Address)],
+                        })
+                      }
+                    >
+                      transfer
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {(isOperator || isOwner) && (
+                <div>
+                  <div className="label mb-1.5">set operator (0x0 = surrender settings)</div>
+                  <div className="flex gap-2">
+                    <input className="input" placeholder="0x…" value={newOperator} onChange={(e) => setNewOperator(e.target.value.trim())} />
+                    <button
+                      className="btn btn-ghost btn-sm flex-shrink-0"
+                      disabled={(!isAddress(newOperator) && newOperator !== "0x0") || tx.s === "wallet" || tx.s === "pending"}
+                      onClick={() =>
+                        send({
+                          functionName: "setProgramOperator",
+                          args: [pool.poolId, newOperator === "0x0" ? zeroAddress : (newOperator as Address)],
+                        })
+                      }
+                    >
+                      set
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {isAdmin && (
+                <div>
+                  <div className="label mb-1.5">pot recipient (admin)</div>
+                  <p className="mono mb-2 text-[10.5px] text-dim2">
+                    current: {pot!.recipient === zeroAddress ? "BURN (cascade)" : short(pot!.recipient)} · 0x0 = burn
+                    {mainIsNative && " — burn not allowed: MAIN is native"}
+                  </p>
+                  <div className="flex gap-2">
+                    <input className="input" placeholder="0x… (0x0 = burn)" value={newRecipient} onChange={(e) => setNewRecipient(e.target.value.trim())} />
+                    <button
+                      className="btn btn-ghost btn-sm flex-shrink-0"
+                      disabled={(!isAddress(newRecipient) && newRecipient !== "0x0") || tx.s === "wallet" || tx.s === "pending"}
+                      onClick={() =>
+                        send({
+                          functionName: "setRecipient",
+                          args: [pool.poolId, newRecipient === "0x0" ? zeroAddress : (newRecipient as Address)],
+                        })
+                      }
+                    >
+                      set
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       )}
 
       <TxStatus tx={tx} net={net} />

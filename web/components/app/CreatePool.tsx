@@ -20,6 +20,7 @@ import { usePot, useProgram, useTokenMeta } from "@/lib/usePool";
 import { fetchPoolState, useAllowance, useBalanceOf, usePoolState } from "@/lib/usePoolState";
 import { getSqrtRatioAtTick, liquidityForAmounts, priceFromSqrt, sqrtFromPrice } from "@/lib/v4math";
 import {
+  clampDraft,
   ConfigEditor,
   configError,
   draftToConfig,
@@ -825,14 +826,14 @@ export function CreatePool({
                   <Slider
                     label="→ autocompound (becomes pool liquidity)"
                     value={draft.potCompoundPct}
-                    onChange={(v) => setDraft({ ...draft, potCompoundPct: v })}
+                    onChange={(v) => setDraft(clampDraft(draft, { potCompoundPct: v }))}
                     max={Math.max(0, 100 - draft.potBurnPct)}
                   />
                   {!mainIsNative && (
                     <Slider
                       label="→ burn"
                       value={draft.potBurnPct}
-                      onChange={(v) => setDraft({ ...draft, potBurnPct: v })}
+                      onChange={(v) => setDraft(clampDraft(draft, { potBurnPct: v }))}
                       color="#e23a3a"
                       max={Math.max(0, 100 - draft.potCompoundPct)}
                     />

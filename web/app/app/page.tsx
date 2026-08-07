@@ -184,6 +184,8 @@ function AppInner() {
     setMtab("info");
   }, [pool?.poolId]);
 
+  const shareLabel = pool ? `${net.label} pool ${short(pool.poolId, 6)}` : net.label;
+
   const newPoolBtn = (
     <button
       className="btn btn-primary w-full"
@@ -217,7 +219,7 @@ function AppInner() {
                   pool {short(pool.poolId, 6)}
                   {pool.key && ` · ${(pool.key.fee / 10_000).toFixed(2)}%`}
                 </span>
-                <ShareButton label={`${net.label} pool ${short(pool.poolId, 6)}`} />
+                {!isMobile && <ShareButton label={shareLabel} />}
               </>
             )}
           </div>
@@ -235,6 +237,7 @@ function AppInner() {
                 Simulate
               </button>
             </div>
+            {isMobile && pool && <ShareButton label={shareLabel} />}
           </div>
         </div>
 

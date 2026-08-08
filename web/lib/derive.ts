@@ -3,14 +3,59 @@ import type { PoolEvent } from "./events";
 export type SeriesPoint = { t: number; v: number }; // t = unix seconds (or block as fallback), v = value
 
 /**
+ * ONE time base per chart. Timestamps resolve lazily and in bounded batches,
+ * so a busy pool always has events still carrying `timestamp: null` — and the
+ * old per-event fallback `timestamp ?? block` MIXED unix seconds (~1.8e9) with
+ * block numbers (~1e7) on the same axis, crushing the real curve into two
+ * clusters joined by a nonsense line. Instead: interpolate every missing
+ * timestamp from the resolved (block, timestamp) anchors, and only when fewer
+ * than two anchors exist fall back to blocks for EVERY point (a wrong unit,
+ * but a consistent one — the shape stays true and the tooltip says "block").
+ */
+function makeTimeOf(events: PoolEvent[]): { timeOf: (e: PoolEvent) => number; timestamped: boolean } {
+  if (!events.some((e) => e.timestamp === null)) {
+    return { timeOf: (e) => e.timestamp!, timestamped: events.length > 0 };
+  }
+  const anchors: { b: number; t: number }[] = [];
+  for (const e of events) {
+    if (e.timestamp === null) continue;
+    if (anchors.length === 0 || anchors[anchors.length - 1].b !== e.block) {
+      anchors.push({ b: e.block, t: e.timestamp });
+    }
+  }
+  if (anchors.length < 2) return { timeOf: (e) => e.block, timestamped: false };
+
+  const est = (b: number): number => {
+    let lo = 0;
+    let hi = anchors.length - 1;
+    if (b <= anchors[0].b) hi = 1;
+    else if (b >= anchors[hi].b) lo = hi - 1;
+    else {
+      // binary search the surrounding anchor pair
+      while (hi - lo > 1) {
+        const mid = (lo + hi) >> 1;
+        if (anchors[mid].b <= b) lo = mid;
+        else hi = mid;
+      }
+    }
+    const a = anchors[lo];
+    const z = anchors[hi];
+    const rate = z.b > a.b ? (z.t - a.t) / (z.b - a.b) : 0;
+    return a.t + (b - a.b) * rate;
+  };
+  return { timeOf: (e) => e.timestamp ?? est(e.block), timestamped: true };
+}
+
+/**
  * Program liquidity trajectory from lifecycle events.
  * Liquidity is a uint128 in pool units; charted as a relative number.
  */
 export function liquiditySeries(events: PoolEvent[]): SeriesPoint[] {
+  const { timeOf } = makeTimeOf(events);
   let liq = 0;
   const pts: SeriesPoint[] = [];
   for (const e of events) {
-    const t = e.timestamp ?? e.block;
+    const t = timeOf(e);
     if (e.kind === "ProgramCreated") {
       // creation itself carries no liquidity; the Add event follows
       pts.push({ t, v: liq });
@@ -30,10 +75,11 @@ export function liquiditySeries(events: PoolEvent[]): SeriesPoint[] {
  * Donated(+amount) · Harvested(+fueled) · Pumped(−spent) · Shielded(−paid)
  */
 export function potSeries(events: PoolEvent[], currentBalance?: number): SeriesPoint[] {
+  const { timeOf, timestamped } = makeTimeOf(events);
   let bal = 0;
   const pts: SeriesPoint[] = [];
   for (const e of events) {
-    const t = e.timestamp ?? e.block;
+    const t = timeOf(e);
     if (e.kind === "Donated") bal += Number(e.data.amount ?? "0");
     else if (e.kind === "Harvested") bal += Number(e.data.fueled ?? "0");
     else if (e.kind === "Pumped") bal -= Number(e.data.spent ?? "0");
@@ -41,8 +87,9 @@ export function potSeries(events: PoolEvent[], currentBalance?: number): SeriesP
     else continue;
     pts.push({ t, v: Math.max(0, bal) });
   }
-  // anchor the tail on the live reading when available (event scan may be partial)
-  if (currentBalance !== undefined && pts.length > 0) {
+  // anchor the tail on the live reading when available (event scan may be
+  // partial) — only on a timestamp axis, never mixing "now" into block units
+  if (timestamped && currentBalance !== undefined && pts.length > 0) {
     const drift = currentBalance - pts[pts.length - 1].v;
     if (Math.abs(drift) > 1e-9) pts.push({ t: Math.floor(Date.now() / 1000), v: currentBalance });
   }

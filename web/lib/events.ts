@@ -157,10 +157,24 @@ export async function resolveTimestamps(
   limit = 120,
 ): Promise<PoolEvent[]> {
   const client = clientForNet(net);
-  const pending = [...new Set(events.filter((e) => e.timestamp === null).map((e) => e.block))]
-    .sort((a, b) => b - a)
-    .slice(0, limit);
-  if (pending.length === 0) return events;
+  const blocks = [...new Set(events.filter((e) => e.timestamp === null).map((e) => e.block))]
+    .sort((a, b) => a - b);
+  if (blocks.length === 0) return events;
+  // Sample EVENLY across the whole unresolved range (always including the
+  // oldest and newest blocks) rather than taking only the newest `limit`:
+  // the charts interpolate the rest from these anchors, so spread anchors
+  // date an entire busy history where a newest-only batch left everything
+  // older than ~120 blocks undatable.
+  let pending: number[];
+  if (blocks.length <= limit) {
+    pending = blocks;
+  } else {
+    const picked = new Set<number>();
+    for (let i = 0; i < limit; i++) {
+      picked.add(blocks[Math.round((i * (blocks.length - 1)) / (limit - 1))]);
+    }
+    pending = [...picked];
+  }
 
   // chunked, NOT one Promise.all over all 120: a free RPC reads a fan-out of
   // that size as abuse and answers 429/500, which loses every timestamp at once

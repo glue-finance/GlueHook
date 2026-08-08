@@ -44,18 +44,24 @@ export function LineChart({
     vals: { color: string; v: number; y: number; label?: string; dashed?: boolean }[];
   } | null>(null);
 
-  const { paths, scaleX, scaleY, tMin, tMax, vMax, hasData } = useMemo(() => {
+  const { paths, scaleX, scaleY, tMin, tMax, vMax, vMin, hasData } = useMemo(() => {
     const all = series.flatMap((s) => s.points);
     if (all.length < 2) {
-      return { paths: [], scaleX: (t: number) => t, scaleY: (v: number) => v, tMin: 0, tMax: 1, vMax: 1, hasData: false };
+      return { paths: [], scaleX: (t: number) => t, scaleY: (v: number) => v, tMin: 0, tMax: 1, vMax: 1, vMin: 0, hasData: false };
     }
     const tMin = Math.min(...all.map((p) => p.t));
     const tMax = Math.max(...all.map((p) => p.t));
-    const vMaxRaw = Math.max(...all.map((p) => p.v));
-    const vMax = vMaxRaw <= 0 ? 1 : vMaxRaw * 1.1;
+    // the y-domain is set by the SOLID series only: a dashed projection that
+    // reaches 15x the live curve used to own the scale and flatten the real
+    // history against the baseline — instead it clips out of the top edge
+    const solid = series.filter((s) => !s.dashed).flatMap((s) => s.points);
+    const scale = solid.length ? solid : all;
+    const vMin = Math.min(0, ...scale.map((p) => p.v));
+    const vMaxRaw = Math.max(...scale.map((p) => p.v));
+    const vMax = vMaxRaw <= vMin ? vMin + 1 : vMin + (vMaxRaw - vMin) * 1.1;
     const sx = (t: number) =>
       PAD.l + ((t - tMin) / Math.max(1e-9, tMax - tMin)) * (W - PAD.l - PAD.r);
-    const sy = (v: number) => H - PAD.b - (v / vMax) * (H - PAD.t - PAD.b);
+    const sy = (v: number) => H - PAD.b - ((v - vMin) / (vMax - vMin)) * (H - PAD.t - PAD.b);
 
     const paths = series.map((s) => {
       if (s.points.length < 2) return { d: "", area: "", s };
@@ -70,7 +76,7 @@ export function LineChart({
         : "";
       return { d, area, s };
     });
-    return { paths, scaleX: sx, scaleY: sy, tMin, tMax, vMax, hasData: true };
+    return { paths, scaleX: sx, scaleY: sy, tMin, tMax, vMax, vMin, hasData: true };
   }, [series, H]);
 
   if (!hasData) {
@@ -91,14 +97,28 @@ export function LineChart({
   function onMove(e: React.MouseEvent<SVGSVGElement>) {
     const rect = e.currentTarget.getBoundingClientRect();
     const px = ((e.clientX - rect.left) / rect.width) * W;
-    const t = tMin + ((px - PAD.l) / (W - PAD.l - PAD.r)) * (tMax - tMin);
-    // snap to the primary series' time grid, then read EVERY series there
+    const py = ((e.clientY - rect.top) / rect.height) * H;
+    // snap to the primary point NEAREST TO THE CURSOR — in both axes, not
+    // just time. Event series routinely carry several points at the SAME t
+    // (a pot fills and spends inside one block); "last point ≤ t" always
+    // answered with the post-spend trough, so hovering a visible spike said
+    // "0". Weighing y in lets the cursor pick the peak it is pointing at.
     const pts = primary.points;
     let best = pts[0];
-    for (const p of pts) if (p.t <= t) best = p;
+    let bd = Infinity;
+    for (const p of pts) {
+      const dx = scaleX(p.t) - px;
+      const dy = (scaleY(p.v) - py) * 0.35; // x dominates; y breaks same-t ties
+      const d = dx * dx + dy * dy;
+      if (d < bd) {
+        bd = d;
+        best = p;
+      }
+    }
     const vals = series
       .filter((s) => s.points.length)
       .map((s) => {
+        if (s === primary) return { color: s.color, v: best.v, y: scaleY(best.v), label: s.label, dashed: s.dashed };
         let bp = s.points[0];
         for (const p of s.points) if (p.t <= best.t) bp = p;
         return { color: s.color, v: bp.v, y: scaleY(bp.v), label: s.label, dashed: s.dashed };
@@ -123,6 +143,10 @@ export function LineChart({
               </linearGradient>
             ) : null,
           )}
+          {/* dashed series may exceed the solid-series domain — clip, don't rescale */}
+          <clipPath id={`${gid}-plot`}>
+            <rect x={PAD.l} y={PAD.t} width={W - PAD.l - PAD.r} height={H - PAD.t - PAD.b} />
+          </clipPath>
         </defs>
         {/* gridlines */}
         {[0.25, 0.5, 0.75].map((f) => (
@@ -146,7 +170,7 @@ export function LineChart({
         />
         {paths.map(({ d, area, s }, i) =>
           d ? (
-            <g key={i}>
+            <g key={i} clipPath={s.dashed ? `url(#${gid}-plot)` : undefined}>
               {area && <path d={area} fill={`url(#${gid}-g${i})`} />}
               {/* soft glow under solid lines */}
               {!s.dashed && (
@@ -184,8 +208,8 @@ export function LineChart({
         {/* y axis labels — in the left gutter, halo-outlined */}
         {[
           { v: vMax, y: PAD.t + 4 },
-          { v: vMax / 2, y: PAD.t + 0.5 * (H - PAD.t - PAD.b) + 4 },
-          { v: 0, y: H - PAD.b + 3 },
+          { v: (vMax + vMin) / 2, y: PAD.t + 0.5 * (H - PAD.t - PAD.b) + 4 },
+          { v: vMin, y: H - PAD.b + 3 },
         ].map((l, i) => (
           <text
             key={i}

@@ -4,6 +4,7 @@ import {
   BuybackManagement, Compound, CompoundMath, CompoundStrategies, Delivery, Donations, Harvest,
   HarvestMath, HarvestPayouts, Pump, Roles, Shield, ThePot,
 } from "./content/machine";
+import { AutonomousBuyback, AutonomousCompounding, Autonomy } from "./content/autonomy";
 import { FeesBurn, FeesFlow, FeesNeverStops, FeesRecipients } from "./content/lpfees";
 import { Api, GlossaryPage, LicensePage, Security } from "./content/reference";
 import { Networks, QuickStart, WhatIs, Why } from "./content/start";
@@ -28,6 +29,9 @@ export const DOC_CONTENT: Record<string, () => ReactNode> = {
   "compound-math": CompoundMath,
   "compound-strategies": CompoundStrategies,
   harvest: Harvest,
+  autonomy: Autonomy,
+  "autonomous-buyback": AutonomousBuyback,
+  "autonomous-compounding": AutonomousCompounding,
   "harvest-math": HarvestMath,
   "harvest-payouts": HarvestPayouts,
   roles: Roles,

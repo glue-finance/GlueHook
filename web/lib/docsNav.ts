@@ -157,6 +157,29 @@ export const DOC_TREE: DocGroup[] = [
     ],
   },
   {
+    label: "The autonomous LP",
+    pages: [
+      {
+        slug: "autonomy",
+        title: "Tokenomics on autopilot",
+        short: "Autopilot",
+        blurb: "Buyback, burn, compound and revenue share as properties of trading — no team required to run them.",
+      },
+      {
+        slug: "autonomous-buyback",
+        title: "Buybacks nobody has to run",
+        short: "Autonomous buyback",
+        blurb: "No signer, no bot, no oracle, no arbitrageur: the buy itself is the trigger, the curve itself is the price.",
+      },
+      {
+        slug: "autonomous-compounding",
+        title: "Compounding without keepers",
+        short: "No keepers",
+        blurb: "The fee-to-liquidity loop with no keeper network, no vault, no performance fee — volume is the only operator.",
+      },
+    ],
+  },
+  {
     label: "Build & manage",
     pages: [
       {

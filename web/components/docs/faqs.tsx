@@ -447,6 +447,72 @@ export const DOC_FAQS: Record<string, DocFaq[]> = {
       a: "Yes — the obligation invariant checks that the hook's custody always covers pot balances + carry + owed + parked, across every randomized campaign.",
     },
   ],
+  autonomy: [
+    {
+      q: "Does the pool literally run with zero human involvement?",
+      a: "Once launched, yes — every engine (harvest, compound, buyback, burn, payouts) is triggered by swaps themselves. Humans only exist at the policy layer: setting the split, fueling the pot, optionally running a manual harvest. All of those are inputs, not dependencies.",
+    },
+    {
+      q: "What happens to the machine if the team abandons the project?",
+      a: "Nothing. The trigger is trading, not the team: as long as anyone swaps, fees harvest, the position compounds, the pot pumps and shields, and supply burns. If the roles were surrendered, even the policy is frozen and runs unchanged forever.",
+    },
+    {
+      q: "Is this the same as renouncing a token contract?",
+      a: "Stronger. Renouncing usually just removes a mint key. Surrendering the hook's roles freezes an active machine — a buyback, burn and compounding program that keeps executing on immutable terms, not just a promise to do nothing bad.",
+    },
+    {
+      q: "If no keeper is paid, who pays the gas for all this?",
+      a: "The triggering swap carries a bounded slice of gas for the auto-harvest, controlled by the minimums the operator sets — so it only fires when the harvest is worth far more than the overhead. Pumps and shields ride the swaps that trigger them. Heavy work can always go through the optional manual path with the caller's own gas.",
+    },
+    {
+      q: "Can autonomy ever hurt a trader?",
+      a: "No — that's the design's hard line. Every autonomous action is wrapped in fault tolerance: if anything about the hook's state or settings would fail, the action is skipped and the swap completes exactly as a vanilla pool. Sellers always receive the pool's exact output.",
+    },
+  ],
+  "autonomous-buyback": [
+    {
+      q: "Why is having no oracle an advantage rather than a limitation?",
+      a: "An oracle is a dependency you must trust and an attacker can bend. The pot trades against the pool's own curve, which IS the price by definition — there is nothing to manipulate upstream of the buyback and no feed that can go stale.",
+    },
+    {
+      q: "What role do arbitrageurs play in the buyback?",
+      a: "None — and that's the point. Designs that move a reference price rely on arbitrageurs to realign the market, paying them a spread on every cycle. Pump and shield execute at the pool's exact tick math inside the trade itself, so no gap opens and no value leaks to third parties.",
+    },
+    {
+      q: "Can the pot be drained by whoever controls it?",
+      a: "Nobody controls it in the withdrawal sense. There is no function that pays the pot out to an address at will — it can only spend on buying or defending its own pool, and its purchases follow the configured split (compound, burn, recipient). The worst a hostile admin can do is point deliveries somewhere else; they can never extract the pot's balance directly.",
+    },
+    {
+      q: "What keeps the pot funded long-term without a treasury?",
+      a: "Two permissionless flows: anyone can donate at any time (the community, the protocol's own contracts, a partner), and a buybackShare on the fee split refuels the pot from the pool's own trading, forever. A pool with volume is structurally self-funding.",
+    },
+    {
+      q: "Does the autonomous buyback ever front-run or sandwich its own traders?",
+      a: "It can't — it has no separate transaction to place. Pump executes inside the buy, shield inside the sell, atomically. There's no pending buyback order in the mempool to trade around, and the trader's own amounts are never touched.",
+    },
+  ],
+  "autonomous-compounding": [
+    {
+      q: "How is this different from an auto-compounding vault?",
+      a: "A vault is a wrapper: a new contract you deposit into, usually charging a performance fee, run by a protocol that must keep operating. Here compounding is native to the pool's own program — no wrapper, no deposit, no fee on your growth, and no protocol whose shutdown ends the service.",
+    },
+    {
+      q: "Why doesn't the engine swap fees to rebalance them before minting?",
+      a: "Rebalancing swaps pay the fee tier and cross the spread — a permanent leak from your yield, and a predictable flow for others to trade against. The engine instead mints the maximum the two-sided constraint allows at the live price and carries the remainder, so growth costs zero spread.",
+    },
+    {
+      q: "What exactly is the carry and is it ever lost?",
+      a: "Minting needs both tokens in the ratio the current tick dictates; whatever doesn't fit that ratio is the carry. It stays credited to the program, is first in line at the next compound, and appears in the views — nothing is ever sold off, donated to the market, or orphaned.",
+    },
+    {
+      q: "What if a compound would be too gas-heavy inside a swap?",
+      a: "The auto-run operates under a hard gas budget in its own frame: if it would exceed it, it reverts atomically — fees stay pending, nothing half-executes, and the carrying swap completes untouched. The manual harvest(key) path with full caller gas picks it up.",
+    },
+    {
+      q: "Does compounding stop if the operator surrenders?",
+      a: "No — surrender freezes the compoundShare at its current value and the loop keeps running on those terms forever. Volume remains the only input; the org chart was never part of the equation.",
+    },
+  ],
   roles: [
     {
       q: "What are the three roles again?",

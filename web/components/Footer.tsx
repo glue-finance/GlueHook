@@ -1,6 +1,8 @@
 import Image from "next/image";
 import Link from "next/link";
 
+import { DUNE_DASHBOARD_URL } from "@/components/DuneIcon";
+
 export function Footer() {
   return (
     <footer className="mt-12 border-t border-[var(--line)] sm:mt-24">
@@ -13,6 +15,7 @@ export function Footer() {
           <div className="mono flex flex-wrap items-center justify-center gap-5 text-[12px] text-dim">
             <Link href="/app" className="hover:text-magenta">App</Link>
             <Link href="/docs" className="hover:text-magenta">Docs</Link>
+            <a href={DUNE_DASHBOARD_URL} target="_blank" rel="noreferrer" className="hover:text-magenta">Dune</a>
             <a href="https://github.com/glue-finance/GlueHook" target="_blank" rel="noreferrer" className="hover:text-magenta">GitHub</a>
             <a href="https://x.com/glue_fi" target="_blank" rel="noreferrer" className="hover:text-magenta">X</a>
             <a href="https://github.com/glue-finance/GlueHook/blob/main/LICENCE.txt" target="_blank" rel="noreferrer" className="hover:text-magenta">Licence</a>

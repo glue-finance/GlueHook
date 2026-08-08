@@ -52,6 +52,17 @@ export function PotGauge({
     };
   }, [curves.data, dec, mainDec]);
 
+  // lifetime firepower actually deployed: pump spend + shield payments, both
+  // denominated in the secondary currency (the pot's own unit)
+  const totalDeployed = useMemo(() => {
+    let sum = 0n;
+    for (const e of events) {
+      if (e.kind === "Pumped") sum += BigInt(e.data.spent ?? "0");
+      else if (e.kind === "Shielded") sum += BigInt(e.data.paid ?? "0");
+    }
+    return sum;
+  }, [events]);
+
   const fullCover = useMemo(() => {
     if (!curves.data) return null;
     let last: bigint | null = null;
@@ -66,8 +77,8 @@ export function PotGauge({
     <div className="panel">
       <div className="chead">
         <span>pot power</span>
-        <span className="pill hi">
-          {pot ? `${ftoken(pot.balance, dec)} ${sym}` : "…"}
+        <span className="pill hi" title="total spent on buybacks + sell defense">
+          {pot ? `${ftoken(totalDeployed, dec)} ${sym} deployed` : "…"}
         </span>
       </div>
       <div className="space-y-5 p-4">
@@ -79,6 +90,7 @@ export function PotGauge({
             yFormat={fnum}
             unit={sym}
             empty="no pot activity yet"
+            lastChip={false}
           />
         </div>
 

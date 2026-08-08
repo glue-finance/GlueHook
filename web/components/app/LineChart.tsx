@@ -23,6 +23,7 @@ export function LineChart({
   empty = "no data yet",
   unit,
   hoverExtra,
+  lastChip = true,
 }: {
   series: ChartSeries[];
   height?: number;
@@ -32,6 +33,8 @@ export function LineChart({
   unit?: string;
   /** extra hover line (e.g. that day's volume), computed from the hovered t */
   hoverExtra?: (t: number) => string;
+  /** hide the pinned last-value chip (e.g. series that always ends at 0) */
+  lastChip?: boolean;
 }) {
   const W = 640;
   const H = height;
@@ -231,7 +234,7 @@ export function LineChart({
         ))}
       </svg>
       {/* last value chip pinned to the primary series' end */}
-      {!hover && (
+      {lastChip && !hover && (
         <div
           className="mono pointer-events-none absolute right-2 rounded-full border-2 px-2.5 py-1 text-[11px] font-bold"
           style={{

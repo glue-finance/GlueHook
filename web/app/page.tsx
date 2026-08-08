@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { DUNE_DASHBOARD_URL, DuneIcon } from "@/components/DuneIcon";
 import { Footer } from "@/components/Footer";
 import { Hookmark } from "@/components/Hookmark";
 import { Nav } from "@/components/Nav";
@@ -230,6 +231,15 @@ export default function Landing() {
               <Link href="/docs" className="btn btn-ghost">
                 Read the Docs
               </Link>
+              <a
+                href={DUNE_DASHBOARD_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="btn btn-ghost inline-flex items-center gap-2"
+              >
+                <DuneIcon className="h-[1.1em] w-[1.1em] shrink-0" />
+                Live Data ↗
+              </a>
               <a
                 href="https://github.com/glue-finance/GlueHook"
                 target="_blank"

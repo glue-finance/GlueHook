@@ -69,39 +69,48 @@ function saveCache(chainId: number, c: Cache) {
   }
 }
 
+const POOL_KEY_TUPLE = {
+  type: "tuple",
+  components: [
+    { type: "address", name: "currency0" },
+    { type: "address", name: "currency1" },
+    { type: "uint24", name: "fee" },
+    { type: "int24", name: "tickSpacing" },
+    { type: "address", name: "hooks" },
+  ],
+} as const;
+
 /**
- * Recover the PoolKey behind an `initPot` transaction. The normal path decodes
- * the calldata (works through simple wrappers by locating the selector inside
- * the data). Verified against the poolId so a wrong guess can never poison the
- * registry.
+ * Recover the PoolKey from the calldata of the transaction that opened the
+ * pot. Two shapes are tried, and BOTH are verified by hashing the candidate
+ * back to the poolId, so a wrong guess can never poison the registry:
+ *
+ * 1. FIRST ARGUMENT. Every hook entrypoint that opens a pot (`launchPool`,
+ *    `initPot`, `addLiquidity…`) takes the PoolKey first, and a PoolKey is a
+ *    STATIC tuple — its five words sit inline right after the selector,
+ *    whatever the function. This is the path that actually fires for pools
+ *    created through the app, which call `launchPool`, not `initPot`.
+ * 2. An `initPot` call embedded ANYWHERE in the data (multicall wrappers).
  */
 function keyFromCalldata(data: Hex, poolId: Hex): PoolKey | null {
+  const id = poolId.toLowerCase();
+  const heads: Hex[] = [];
+  if (data.length >= 2 + 8 + 320) heads.push(slice(data, 4, 4 + 160));
   const idx = data.indexOf(INIT_POT_SELECTOR.slice(2));
-  if (idx < 2) return null;
-  try {
-    const argsHex = slice(data, (idx - 2) / 2 + 4);
-    const [key] = decodeAbiParameters(
-      [
-        {
-          type: "tuple",
-          components: [
-            { type: "address", name: "currency0" },
-            { type: "address", name: "currency1" },
-            { type: "uint24", name: "fee" },
-            { type: "int24", name: "tickSpacing" },
-            { type: "address", name: "hooks" },
-          ],
-        },
-        { type: "address" },
-        { type: "address" },
-      ],
-      argsHex,
-    );
-    const k = key as PoolKey;
-    return poolIdOf(k).toLowerCase() === poolId.toLowerCase() ? k : null;
-  } catch {
-    return null;
+  if (idx >= 2 && (idx - 2) % 2 === 0) {
+    const at = (idx - 2) / 2 + 4;
+    if (data.length >= 2 + at * 2 + 320) heads.push(slice(data, at, at + 160));
   }
+  for (const head of heads) {
+    try {
+      const [key] = decodeAbiParameters([POOL_KEY_TUPLE], head);
+      const k = key as PoolKey;
+      if (poolIdOf(k).toLowerCase() === id) return k;
+    } catch {
+      /* not this shape — try the next candidate */
+    }
+  }
+  return null;
 }
 
 const POT_OPENED_TOPIC0 = toEventSelector(potOpenedEvent);
@@ -169,8 +178,10 @@ async function keysFromPoolManager(
       const hit = keyFromInitializeLog(log);
       if (hit) found.set(hit.id.toLowerCase(), hit.key);
     }
-  } catch {
-    /* leave unresolved — the pot still works, key-bound ops do not */
+  } catch (e) {
+    // unresolved is retried on the next scan — but say WHY it failed now,
+    // because a silent null here reads as "pool broken" in the UI
+    console.warn(`[registry] PoolKey recovery failed for ${ids.length} pool(s):`, e);
   }
   return found;
 }
@@ -191,6 +202,8 @@ export async function scanPools(
     : BigInt(net.deployBlock);
   const latest = await client.getBlockNumber();
 
+  let dirty = false;
+
   if (from <= latest) {
     const { logs, scannedTo } = await scanLogs(scanClientsFor(net), {
       address: net.hook,
@@ -201,11 +214,8 @@ export async function scanPools(
       onProgress,
     });
 
-    // resolve keys from calldata first (one getTransaction each), collecting
-    // the misses so they can share a SINGLE PoolManager lookup below
-    const unresolved: Hex[] = [];
-    let newestMiss = BigInt(net.deployBlock);
-
+    // resolve what calldata can (one getTransaction each) — misses land in
+    // the cache as key:null and are picked up by the batched retry below
     for (const log of logs) {
       let poolId: Hex;
       let admin: Address;
@@ -229,30 +239,44 @@ export async function scanPools(
       } catch {
         /* tx fetch failed → PoolManager fallback */
       }
-      if (!key) {
-        unresolved.push(poolId);
-        const b = log.blockNumber ?? latest;
-        if (b > newestMiss) newestMiss = b;
-      }
       cache.pools[poolId.toLowerCase()] = { key, admin, block };
-    }
-
-    if (unresolved.length > 0) {
-      // every Initialize sits at or before the newest pot block, so that is a
-      // complete upper bound for the backwards walk
-      const recovered = await keysFromPoolManager(net, unresolved, newestMiss);
-      for (const [id, key] of recovered) {
-        const entry = cache.pools[id];
-        if (entry) entry.key = key;
-      }
+      dirty = true;
     }
     // persist how far the scan actually GOT — an interrupted scan resumes
     // from the failure point instead of stamping the gap as "done"
     if (scannedTo >= from) {
       cache.lastBlock = scannedTo.toString();
-      saveCache(net.chain.id, cache);
+      dirty = true;
     }
   }
+
+  // EVERY pool still missing its key gets retried, every scan — not just the
+  // ones found above. Recovery can fail transiently (a rate-limited first
+  // visit), and a null that nothing revisits would otherwise be permanent:
+  // the scan frontier has moved on, so no future pass would ever look again.
+  // One batched, id-filtered backwards lookup covers the whole set.
+  const unresolved: Hex[] = [];
+  let newestMiss = BigInt(net.deployBlock);
+  for (const [id, p] of Object.entries(cache.pools)) {
+    if (p.key) continue;
+    unresolved.push(id as Hex);
+    const b = p.block > 0 ? BigInt(p.block) : latest;
+    if (b > newestMiss) newestMiss = b;
+  }
+  if (unresolved.length > 0) {
+    // every Initialize sits at or before its own pot block, so the newest pot
+    // block is a complete upper bound for the backwards walk
+    const recovered = await keysFromPoolManager(net, unresolved, newestMiss);
+    for (const [id, key] of recovered) {
+      const entry = cache.pools[id];
+      if (entry) {
+        entry.key = key;
+        dirty = true;
+      }
+    }
+  }
+
+  if (dirty) saveCache(net.chain.id, cache);
 
   return Object.entries(cache.pools).map(([poolId, p]) => ({
     poolId: poolId as Hex,

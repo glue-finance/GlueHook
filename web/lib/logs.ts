@@ -165,12 +165,15 @@ export async function scanLogs(
   // healthy 10k window to a 182-request crawl for the rest of the scan
   let rangeVerdicts = 0;
 
-  // one fetcher per endpoint; the fan-out below deals them round-robin so a
-  // parallel round spreads over sibling endpoints instead of stacking on one
+  // one fetcher per endpoint, dealt round-robin — by the fan-out AND by the
+  // sequential path. Pinning the sequential path to the first endpoint let
+  // one flaky primary stall the whole scan (Monad's dRPC gateway sometimes
+  // routes to an upstream that answers -32601 "eth_getLogs not available")
+  // while healthy siblings sat idle; rotating also means the retry after a
+  // failure lands on a DIFFERENT endpoint wherever there is more than one.
   const fetchers = pool.map((c) => makeGetRange(c, address, topics));
   let turn = 0;
   const nextFetcher = () => fetchers[turn++ % fetchers.length];
-  const getRange = (from: bigint, to: bigint) => fetchers[0](from, to);
 
   /**
    * Handle a failed range. Returns true to keep scanning, false to stop.
@@ -240,7 +243,7 @@ export async function scanLogs(
 
     const end = cursor + window - 1n > toBlock ? toBlock : cursor + window - 1n;
     try {
-      const logs = await getRange(cursor, end);
+      const logs = await nextFetcher()(cursor, end);
       out.push(...logs);
       cursor = end + 1n;
       streak++;
@@ -286,7 +289,10 @@ export async function findLogsBackward(
   const { address, topics, fromBlock, toBlock, maxRange, done, budget = 40 } = params;
   const window = effectiveCap(maxRange);
   const pool = Array.isArray(clients) ? clients : [clients];
-  const getRange = makeGetRange(pool[0], address, topics);
+  const fetchers = pool.map((c) => makeGetRange(c, address, topics));
+  // rotate to a sibling endpoint on failure — pinning the walk to one
+  // endpoint let a single rate-limited provider burn the whole budget
+  let turn = 0;
 
   const out: Log[] = [];
   let end = toBlock;
@@ -296,12 +302,13 @@ export async function findLogsBackward(
     const start = end - window + 1n > fromBlock ? end - window + 1n : fromBlock;
     spent++;
     try {
-      out.push(...(await getRange(start, end)));
+      out.push(...(await fetchers[turn % fetchers.length](start, end)));
       if (done(out)) return out;
     } catch (e) {
-      // a width the endpoint refuses is a dead end for this walk; anything
-      // else is worth one paced retry of the same window
-      if (classify(e) === "range") break;
+      turn++;
+      // a width the endpoint refuses is a dead end for this walk once every
+      // endpoint has said so; anything else is worth a paced retry
+      if (classify(e) === "range" && turn % fetchers.length === 0) break;
       await sleep(1_000);
       continue;
     }

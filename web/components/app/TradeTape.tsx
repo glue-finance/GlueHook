@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { Net } from "@/lib/chains";
 import { BURN_MODES, type PoolEvent } from "@/lib/events";
 import { ago, ftoken, short } from "@/lib/format";
@@ -27,6 +27,21 @@ function styleOf(e: PoolEvent): { color: string; label: string } {
   }
   return STYLE[e.kind] ?? { color: "#a5b6a1", label: e.kind };
 }
+
+/** What each action MEANS — shown when hovering the badge in the tape. */
+const EXPLAIN: Record<string, string> = {
+  PUMP: "the pot spent its secondary to buy main inside a buyer's swap — extra buy pressure lands on every buy",
+  SHIELD: "the pot absorbed part of a sell at the pool's own price, so less sell pressure ever reaches the pool",
+  DONATE: "someone sent secondary straight into the pot — anyone can fuel the buyback firepower",
+  HARVEST: "the program's accrued LP fees were collected and split by the pool's own rules (compound, burn, buyback, recipient)",
+  COMPOUND: "collected fees were re-minted into the pool's own liquidity — the position grows itself",
+  BURNED: "main removed from circulation forever through the burn cascade (own burn, 0xdead, or held on the hook with no exit)",
+  CARRY: "buyback output credited to the compound carry — it becomes the pool's own liquidity at the next harvest",
+  PAYOUT: "a delivery leg pushed to the pool's configured recipient (or parked for a retry if it refused)",
+  "LP+": "liquidity added to the program position",
+  "LP−": "liquidity removed from the program position by its owner",
+  PROGRAM: "the pool's LP program was created — the machine switched on",
+};
 
 function describe(e: PoolEvent, main?: TokenMeta, sec?: TokenMeta): string {
   const S = (x?: string, m?: TokenMeta) => (x ? ftoken(BigInt(x), m?.decimals ?? 18) : "0");
@@ -79,6 +94,9 @@ export function TradeTape({
   progress?: number | null;
 }) {
   const items = useMemo(() => [...events].reverse().slice(0, 40), [events]);
+  // fixed-position tooltip: the tape scrolls (overflow-y-auto clips absolutely
+  // positioned children), so the explainer floats above the viewport instead
+  const [tip, setTip] = useState<{ x: number; y: number; below: boolean; label: string; color: string; text: string } | null>(null);
   return (
     <div className="panel">
       <div className="chead">
@@ -110,11 +128,26 @@ export function TradeTape({
               className="tape-item flex items-center gap-3 rounded-lg px-3 py-2 transition-colors hover:bg-green/5"
             >
               <span
-                className="mono w-[74px] flex-shrink-0 text-center text-[10px] font-bold tracking-wider"
+                className="mono w-[74px] flex-shrink-0 cursor-help text-center text-[10px] font-bold tracking-wider"
                 style={{
                   color: s.color,
                   textShadow: `0 0 12px ${s.color}66`,
                 }}
+                onMouseEnter={(ev) => {
+                  const text = EXPLAIN[s.label];
+                  if (!text) return;
+                  const r = ev.currentTarget.getBoundingClientRect();
+                  const below = r.top < 120; // no room above → flip under the badge
+                  setTip({
+                    x: r.left + r.width / 2,
+                    y: below ? r.bottom + 6 : r.top - 6,
+                    below,
+                    label: s.label,
+                    color: s.color,
+                    text,
+                  });
+                }}
+                onMouseLeave={() => setTip(null)}
               >
                 {s.label}
               </span>
@@ -128,6 +161,17 @@ export function TradeTape({
           );
         })}
       </div>
+      {tip && (
+        <div
+          className="mono pointer-events-none fixed z-[60] w-[240px] rounded-lg border border-[var(--line2)] bg-bg/95 px-3 py-2 text-[10.5px] leading-relaxed text-dim shadow-lg"
+          style={{ left: tip.x, top: tip.y, transform: tip.below ? "translate(-50%, 0)" : "translate(-50%, -100%)" }}
+        >
+          <div className="mb-0.5 text-[10px] font-bold tracking-wider" style={{ color: tip.color }}>
+            {tip.label}
+          </div>
+          {tip.text}
+        </div>
+      )}
     </div>
   );
 }

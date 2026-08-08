@@ -46,7 +46,7 @@ export function Nav({ right }: { right?: React.ReactNode }) {
             className="mono flex items-center gap-1.5 rounded-lg px-4 py-2 text-[12px] uppercase tracking-[0.14em] text-dim transition-colors hover:text-txt"
           >
             <DuneIcon className="h-3.5 w-3.5 shrink-0" />
-            Data ↗
+            Live Data ↗
           </a>
           <a
             href="https://github.com/glue-finance/GlueHook"

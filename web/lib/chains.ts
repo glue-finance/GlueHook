@@ -167,14 +167,18 @@ export const NETS: Net[] = [
   },
   {
     chain: unichain, slug: "unichain", label: "Unichain", testnet: false,
-    // publicnode, NOT mainnet.unichain.org — the official endpoint has been seen accepting
-    // eth_sendRawTransaction and silently dropping it.
-    // reads may fall back to mainnet.unichain.org — writes go through the wallet, never here
-    rpcs: rpcsFor(130, "https://unichain-rpc.publicnode.com", "https://unichain.drpc.org", "https://mainnet.unichain.org"),
+    // publicnode is BANNED here: its unichain replica reports the live head but is missing
+    // recent receipts, contract code AND returns empty getLogs with a SUCCESS status —
+    // silent data loss no scanner can detect (it hid real pools until the v6 cache flush).
+    // drpc + the official endpoint both serve archive logs at 10k and agree with Blockscout.
+    // (mainnet.unichain.org once mishandled eth_sendRawTransaction — reads only; writes go
+    // through the wallet, never through this list.)
+    rpcs: rpcsFor(130, "https://unichain.drpc.org", "https://mainnet.unichain.org"),
     hook: CANONICAL_HOOK, poolManager: "0x1F98400000000000000000000000000000000004",
     deployBlock: 55356883, explorer: "https://uniscan.xyz",
     universalRouter: "0xef740bf23acae26f6492b10de645d6b98dc8eaf3",
-    logRange: 50_000,
+    logRange: 10_000,
+    logEndpoints: 2,
   },
   {
     chain: arbitrum, slug: "arbitrum", label: "Arbitrum", testnet: false,

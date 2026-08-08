@@ -21,11 +21,12 @@ export type RegisteredPool = {
   block: number;
 };
 
-// v5: the PotOpened scan and the Initialize fallback both filter by topic on
-// the NODE now, and the fallback is a single batched lookup instead of one
-// full-history scan per pool. Rescan clean.
+// v6: unichain's publicnode endpoint was returning EMPTY getLogs with a
+// success status (missing receipts/code too), so v5 caches on that chain
+// stamped "scanned to latest" with real pools silently absent. The endpoint
+// is gone from the RPC list; the version bump forces a clean rescan.
 type Cache = {
-  v: 5;
+  v: 6;
   lastBlock: string;
   pools: Record<string, { key: PoolKey | null; admin: Address; block: number }>;
 };
@@ -50,13 +51,13 @@ function loadCache(chainId: number): Cache {
       const raw = localStorage.getItem(cacheKey(chainId));
       if (raw) {
         const c = JSON.parse(raw) as Cache;
-        if (c.v === 5) return c;
+        if (c.v === 6) return c;
       }
     } catch {
       /* corrupted cache → rescan */
     }
   }
-  return { v: 5, lastBlock: "0", pools: {} };
+  return { v: 6, lastBlock: "0", pools: {} };
 }
 
 function saveCache(chainId: number, c: Cache) {

@@ -1,4 +1,4 @@
-import type { PoolEvent } from "./events";
+import { BURN_MODES, type PoolEvent } from "./events";
 
 export type SeriesPoint = { t: number; v: number }; // t = unix seconds (or block as fallback), v = value
 
@@ -92,6 +92,24 @@ export function potSeries(events: PoolEvent[], currentBalance?: number): SeriesP
   if (timestamped && currentBalance !== undefined && pts.length > 0) {
     const drift = currentBalance - pts[pts.length - 1].v;
     if (Math.abs(drift) > 1e-9) pts.push({ t: Math.floor(Date.now() / 1000), v: currentBalance });
+  }
+  return pts;
+}
+
+/**
+ * Cumulative main taken out of circulation forever: every Delivered event
+ * whose mode is a burn leg (BURNED · DEAD · HELD). Covers both the buyback
+ * split's burn and the harvest's main-side burn — both route through the
+ * same delivery cascade, so this single event stream never double-counts.
+ */
+export function burnedSeries(events: PoolEvent[]): SeriesPoint[] {
+  const { timeOf } = makeTimeOf(events);
+  let total = 0;
+  const pts: SeriesPoint[] = [];
+  for (const e of events) {
+    if (e.kind !== "Delivered" || !BURN_MODES.has(e.data.mode ?? "")) continue;
+    total += Number(e.data.amount ?? "0");
+    pts.push({ t: timeOf(e), v: total });
   }
   return pts;
 }

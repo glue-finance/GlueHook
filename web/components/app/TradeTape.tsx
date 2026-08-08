@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import type { Net } from "@/lib/chains";
-import type { PoolEvent } from "@/lib/events";
+import { BURN_MODES, type PoolEvent } from "@/lib/events";
 import { ago, ftoken, short } from "@/lib/format";
 import type { TokenMeta } from "@/lib/usePool";
 import { ScanBar } from "./ScanBar";
@@ -18,9 +18,30 @@ const STYLE: Record<string, { color: string; label: string }> = {
   ProgramCreated: { color: "#a5b6a1", label: "PROGRAM" },
 };
 
+function styleOf(e: PoolEvent): { color: string; label: string } {
+  if (e.kind === "Delivered") {
+    // burn legs stand apart from ordinary recipient payouts and the carry credit
+    if (BURN_MODES.has(e.data.mode ?? "")) return { color: "#e2571e", label: "BURNED" };
+    if (e.data.mode === "5") return { color: "#b86bcf", label: "CARRY" };
+    return { color: "#a5b6a1", label: "PAYOUT" };
+  }
+  return STYLE[e.kind] ?? { color: "#a5b6a1", label: e.kind };
+}
+
 function describe(e: PoolEvent, main?: TokenMeta, sec?: TokenMeta): string {
   const S = (x?: string, m?: TokenMeta) => (x ? ftoken(BigInt(x), m?.decimals ?? 18) : "0");
   switch (e.kind) {
+    case "Delivered": {
+      const amt = `${S(e.data.amount, main)} ${main?.symbol ?? ""}`;
+      switch (e.data.mode) {
+        case "1": return `${amt} burned 🔥`;
+        case "2": return `${amt} sent to 0xdead 🔥`;
+        case "3": return `${amt} locked on the hook forever 🔥`;
+        case "5": return `${amt} credited to the compound carry`;
+        case "4": return `${amt} parked for the recipient (retryable)`;
+        default: return `${amt} delivered to ${short(e.data.to ?? "")}`;
+      }
+    }
     case "Pumped":
       return `spent ${S(e.data.spent, sec)} ${sec?.symbol ?? ""} → bought ${S(e.data.bought, main)} ${main?.symbol ?? ""}`;
     case "Shielded":
@@ -79,7 +100,7 @@ export function TradeTape({
           </div>
         )}
         {items.map((e) => {
-          const s = STYLE[e.kind] ?? { color: "#a5b6a1", label: e.kind };
+          const s = styleOf(e);
           return (
             <a
               key={`${e.txHash}-${e.logIndex}`}

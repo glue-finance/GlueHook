@@ -3,7 +3,7 @@
 import { useMemo } from "react";
 import { formatUnits } from "viem";
 import type { Net } from "@/lib/chains";
-import { potSeries } from "@/lib/derive";
+import { burnedSeries, potSeries } from "@/lib/derive";
 import type { PoolEvent } from "@/lib/events";
 import { fnum, ftoken } from "@/lib/format";
 import type { Pot } from "@/lib/hook";
@@ -39,6 +39,12 @@ export function PotGauge({
     const curRaw = pot ? Number(pot.balance) : undefined;
     return potSeries(events, curRaw).map((p) => ({ t: p.t, v: p.v / 10 ** dec }));
   }, [events, pot, dec]);
+
+  // cumulative main out of circulation forever (burn cascade), in main tokens
+  const burned = useMemo(
+    () => burnedSeries(events).map((p) => ({ t: p.t, v: p.v / 10 ** mainDec })),
+    [events, mainDec],
+  );
 
   // attack: pot spend (secondary) vs carrying buy size (secondary)
   // defense: main absorbed vs main sell size — MAIN decimals on both axes
@@ -93,6 +99,24 @@ export function PotGauge({
             lastChip={false}
           />
         </div>
+
+        {burned.length > 1 && (
+          <div>
+            <div className="label mb-2" style={{ color: "#e2571e" }}>
+              burned forever — cumulative
+            </div>
+            <LineChart
+              series={[{ points: burned, color: "#e2571e", fill: true }]}
+              height={120}
+              yFormat={fnum}
+              unit={mainSym}
+            />
+            <p className="mono mt-1 px-1 text-[10px] leading-relaxed text-dim2">
+              {mainSym} permanently removed from circulation through the burn
+              cascade — buyback burns and harvest burns combined.
+            </p>
+          </div>
+        )}
 
         <div className="grid gap-5 sm:grid-cols-2">
           <div>

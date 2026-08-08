@@ -9,9 +9,13 @@ export type PoolEventKind =
   | "Donated"
   | "Harvested"
   | "Compounded"
+  | "Delivered"
   | "ProgramLiquidityAdded"
   | "ProgramLiquidityRemoved"
   | "ProgramCreated";
+
+/** IGlueHook.Delivery — `Delivered.mode` values that take main out of circulation forever. */
+export const BURN_MODES = new Set(["1", "2", "3"]); // BURNED · DEAD · HELD
 
 export type PoolEvent = {
   kind: PoolEventKind;
@@ -32,6 +36,8 @@ const EVENTS: AbiEvent[] = [
   parseAbiItem(
     "event Compounded(bytes32 indexed poolId, uint128 liquidity, uint256 amount0Used, uint256 amount1Used)",
   ),
+  // Delivery enum canonicalizes to uint8 in the signature — selector matches on-chain
+  parseAbiItem("event Delivered(bytes32 indexed poolId, address indexed to, uint256 amount, uint8 mode)"),
   parseAbiItem(
     "event ProgramLiquidityAdded(bytes32 indexed poolId, uint128 liquidity, uint256 amount0Used, uint256 amount1Used)",
   ),
@@ -51,10 +57,9 @@ const EVENTS: AbiEvent[] = [
 const TOPIC0S: Hex[] = EVENTS.map((e) => toEventSelector(e));
 const BY_TOPIC0 = new Map<Hex, AbiEvent>(EVENTS.map((e, i) => [TOPIC0S[i], e]));
 
-// v4: the scan now filters by topic on the NODE. v3 caches were built by a
-// client-side filter over every pool's logs — correct, but recorded against a
-// frontier reached under a different failure model; rescan clean.
-type FeedCache = { v: 4; lastBlock: string; events: PoolEvent[] };
+// v5: Delivered joined the topic filter — v4 caches were scanned without it,
+// so their frontier silently misses every burn/delivery log; rescan clean.
+type FeedCache = { v: 5; lastBlock: string; events: PoolEvent[] };
 
 const feedKey = (chainId: number, poolId: string) => `gh.feed.${chainId}.${poolId.toLowerCase()}`;
 
@@ -64,13 +69,13 @@ function loadFeed(chainId: number, poolId: string): FeedCache {
       const raw = localStorage.getItem(feedKey(chainId, poolId));
       if (raw) {
         const c = JSON.parse(raw) as FeedCache;
-        if (c.v === 4) return c;
+        if (c.v === 5) return c;
       }
     } catch {
       /* rescan */
     }
   }
-  return { v: 4, lastBlock: "0", events: [] };
+  return { v: 5, lastBlock: "0", events: [] };
 }
 
 function saveFeed(chainId: number, poolId: string, c: FeedCache) {

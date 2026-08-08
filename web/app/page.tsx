@@ -238,7 +238,7 @@ export default function Landing() {
                 className="btn btn-ghost inline-flex items-center gap-2"
               >
                 <DuneIcon className="h-[1.1em] w-[1.1em] shrink-0" />
-                Live Data ↗
+                Data ↗
               </a>
               <a
                 href="https://github.com/glue-finance/GlueHook"
